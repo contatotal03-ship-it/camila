@@ -5,6 +5,8 @@
 # --- Ejecutables compilados (se distribuyen via GitHub Releases) ---
 *.exe
 *.msi
+*.zip
+Conciliador_Release/
 build/
 dist/
 **/build/

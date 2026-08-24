@@ -5,8 +5,10 @@ from PyQt6.QtWidgets import ( # type: ignore
     QPushButton, QLabel, QStackedWidget, QFileDialog, QLineEdit,
     QTextEdit, QFrame, QMessageBox, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize # type: ignore
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer # type: ignore
 from PyQt6.QtGui import QFont, QColor # type: ignore
+
+import auto_updater
 
 # Importar la logica de ventas y compras
 try:
@@ -304,7 +306,7 @@ class ComprasWidget(VentasWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Conciliador Financiero")
+        self.setWindowTitle(f"Conciliador Financiero v{auto_updater.get_local_version()}")
         self.resize(960, 640)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -393,17 +395,31 @@ class MainWindow(QMainWindow):
 
         self.btn_config = QPushButton("  Configuracion")
         self.btn_config.setObjectName("BtnConfig")
-        self.btn_config.setMinimumHeight(46)
+        self.btn_config.setMinimumHeight(44)
         self.btn_config.setStyleSheet(
             "QPushButton {"
             "  background-color: transparent; color: #4a6070;"
-            "  text-align: left; padding: 14px 20px; font-size: 13px;"
+            "  text-align: left; padding: 12px 20px; font-size: 13px;"
             "  border: none; border-top: 1px solid #131e29;"
             "}"
             "QPushButton:hover { color: #7faabb; background-color: #0e1820; }"
         )
         self.btn_config.clicked.connect(self.abrir_configuracion)
         sidebar_layout.addWidget(self.btn_config)
+
+        self.btn_update = QPushButton(f"  🌐 v{auto_updater.get_local_version()} | Actualizar")
+        self.btn_update.setObjectName("BtnUpdateSidebar")
+        self.btn_update.setMinimumHeight(44)
+        self.btn_update.setStyleSheet(
+            "QPushButton {"
+            "  background-color: transparent; color: #00d4aa;"
+            "  text-align: left; padding: 12px 20px; font-size: 12px; font-weight: bold;"
+            "  border: none; border-top: 1px solid #131e29;"
+            "}"
+            "QPushButton:hover { color: #ffffff; background-color: #0c2b2b; }"
+        )
+        self.btn_update.clicked.connect(lambda: auto_updater.check_for_updates_threaded(self, silent=False))
+        sidebar_layout.addWidget(self.btn_update)
 
         # ── Stack ──────────────────────────────────────────────
         self.stack = QStackedWidget()
@@ -421,6 +437,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
         main_layout.addWidget(self.stack)
         self.load_styles()
+        QTimer.singleShot(3500, lambda: auto_updater.check_for_updates_threaded(self, silent=True))
 
     def load_styles(self):
         style_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles.qss")
