@@ -29,8 +29,21 @@ __pycache__/
 # --- Variables de entorno / Credenciales ---
 .env
 .env.local
+*.env
 secrets.py
 config_local.py
+*token*.json
+
+# --- Carpetas de Scratch / Pruebas / Diagnósticos temporales ---
+scratch/
+**/scratch/
+pruebas/
+**/pruebas/
+diag*.py
+prueba*.py
+test*.py
+*.tmp
+debug_*.txt
 
 # --- Archivos temporales de Microsoft Office ---
 ~$*.xlsx
@@ -47,6 +60,7 @@ $RECYCLE.BIN/
 # --- Logs ---
 *.log
 logs/
+**/logs/
 
 # --- IDEs ---
 .vscode/
