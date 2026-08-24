@@ -1,0 +1,55 @@
+# =============================================
+# .gitignore - Proyecto CAMILA (02-camila)
+# =============================================
+
+# --- Ejecutables compilados (se distribuyen via GitHub Releases) ---
+*.exe
+*.msi
+build/
+dist/
+**/build/
+**/dist/
+
+# --- Entornos virtuales (NO subir .venv - son cientos de MB) ---
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# --- Archivos temporales de Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.eggs/
+*.egg-info/
+
+# --- Variables de entorno / Credenciales ---
+.env
+.env.local
+secrets.py
+config_local.py
+
+# --- Archivos temporales de Microsoft Office ---
+~$*.xlsx
+~$*.xls
+~$*.docx
+~$*.doc
+~$*.pptx
+
+# --- Archivos temporales de Windows ---
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+*~
