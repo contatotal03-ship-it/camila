@@ -7,7 +7,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-GITHUB_REPO = "contatotal03-ship-it/camila"
+GITHUB_REPO = "contatotal03-ship-it/descargas-software"
 AUTH_TOKEN = "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"
 BASE_DIR = Path(__file__).parent.resolve()
 
