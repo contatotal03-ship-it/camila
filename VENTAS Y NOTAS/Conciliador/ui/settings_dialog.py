@@ -12,8 +12,16 @@ class SettingsDialog(QDialog):
         super().__init__(parent) # type: ignore
         self.setWindowTitle("Configuración de Hojas Sistema")
         self.setMinimumSize(500, 400)
+        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.init_ui()
         self.load_settings()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
