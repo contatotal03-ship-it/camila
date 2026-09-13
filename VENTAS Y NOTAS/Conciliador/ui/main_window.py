@@ -174,17 +174,32 @@ class VentasWidget(QWidget):
         layout.addSpacing(8)
         layout.addLayout(dian_det_layout)
         
-        # Boton Procesar
+        # Botones Procesar y Limpiar
         layout.addSpacing(14)
+        btn_box = QHBoxLayout()
+        btn_box.setSpacing(12)
+        btn_box.addStretch()
+
         self.procesar_btn = QPushButton("Procesar y Generar Reporte")
         self.procesar_btn.setProperty("class", "PrimaryButton")
         self.procesar_btn.setMinimumHeight(48)
         self.procesar_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.DemiBold))
         self.procesar_btn.clicked.connect(self.procesar)
         self.procesar_btn.setEnabled(False)
-        
-        layout.addWidget(self.procesar_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-        
+
+        self.limpiar_btn = QPushButton("  🧹 Limpiar Todo  ")
+        self.limpiar_btn.setProperty("class", "DangerButton")
+        self.limpiar_btn.setMinimumHeight(48)
+        self.limpiar_btn.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
+        self.limpiar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.limpiar_btn.setToolTip("Limpiar todas las rutas cargadas y resultados para empezar de cero")
+        self.limpiar_btn.clicked.connect(self.limpiar_todo)
+
+        btn_box.addWidget(self.procesar_btn)
+        btn_box.addWidget(self.limpiar_btn)
+        btn_box.addStretch()
+
+        layout.addLayout(btn_box)
         layout.addSpacing(14)
 
         # Resultados
@@ -220,6 +235,22 @@ class VentasWidget(QWidget):
         if file:
             self.ruta_dian_detalle = file
             self.dian_det_path.setText(file)
+
+    def limpiar_todo(self):
+        """Limpia todas las rutas cargadas, campos de texto y resultados."""
+        self.ruta_sistema = ""
+        self.ruta_dian = ""
+        self.ruta_dian_detalle = ""
+        self.ruta_salida = ""
+        self.sis_path.clear()
+        self.dian_path.clear()
+        self.dian_det_path.clear()
+        if hasattr(self, "ruta_referencias"):
+            self.ruta_referencias = None
+        if hasattr(self, "ref_path"):
+            self.ref_path.clear()
+        self.result_text.clear()
+        self.procesar_btn.setEnabled(False)
             
     def procesar(self):
         # Preguntar donde guardar el resultado

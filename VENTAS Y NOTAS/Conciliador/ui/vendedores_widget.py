@@ -83,6 +83,7 @@ class VendedoresWidget(QWidget):
         super().__init__()
         self.ruta_archivo = ""
         self.ruta_salida = ""
+        self.ruta_asiento_nc = ""
         self.init_ui()
 
     def init_ui(self):
@@ -174,11 +175,12 @@ class VendedoresWidget(QWidget):
         root.addWidget(input_card)
         root.addSpacing(16)
 
-        # ── Generate Button ────────────────────────────────────
+        # ── Buttons (Generate & Reset) ─────────────────────────
         btn_container = QFrame()
         btn_container.setStyleSheet("background: transparent; border: none;")
         btn_layout = QHBoxLayout(btn_container)
         btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(12)
         btn_layout.addStretch()
 
         self.procesar_btn = QPushButton("   Generar Dashboard de Vendedores   ")
@@ -188,7 +190,16 @@ class VendedoresWidget(QWidget):
         self.procesar_btn.clicked.connect(self.procesar)
         self.procesar_btn.setEnabled(False)
 
+        self.limpiar_btn = QPushButton("   🧹 Limpiar Todo   ")
+        self.limpiar_btn.setProperty("class", "DangerButton")
+        self.limpiar_btn.setMinimumHeight(48)
+        self.limpiar_btn.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
+        self.limpiar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.limpiar_btn.setToolTip("Limpiar todas las rutas, campos y resultados para empezar desde cero")
+        self.limpiar_btn.clicked.connect(self.limpiar_todo)
+
         btn_layout.addWidget(self.procesar_btn)
+        btn_layout.addWidget(self.limpiar_btn)
         btn_layout.addStretch()
         root.addWidget(btn_container)
         root.addSpacing(12)
@@ -321,3 +332,15 @@ class VendedoresWidget(QWidget):
         if file:
             self.ruta_asiento_nc = file
             self.ncc_file_path.setText(os.path.basename(file))
+
+    def limpiar_todo(self):
+        """Limpia todas las rutas, campos de texto y resultados para empezar desde cero."""
+        self.ruta_archivo = ""
+        self.ruta_salida = ""
+        self.ruta_asiento_nc = ""
+        self.file_path.clear()
+        self.ncc_file_path.clear()
+        self.info_label.setText("")
+        self.result_text.clear()
+        self.procesar_btn.setEnabled(False)
+        self.procesar_btn.setText("   Generar Dashboard de Vendedores   ")

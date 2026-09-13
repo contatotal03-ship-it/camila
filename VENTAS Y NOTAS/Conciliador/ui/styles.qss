@@ -138,6 +138,34 @@ QPushButton.SecondaryButton:disabled {
     border-color: #1a2530;
 }
 
+/* ── Danger / Reset Button ───────────────────────────────────────── */
+QPushButton.DangerButton {
+    background-color: #26161b;
+    color: #f87171;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 10px 20px;
+    border: 1px solid #57202b;
+    letter-spacing: 0.3px;
+}
+
+QPushButton.DangerButton:hover {
+    background-color: #381923;
+    color: #fca5a5;
+    border-color: #7f2b3b;
+}
+
+QPushButton.DangerButton:pressed {
+    background-color: #1a0f13;
+}
+
+QPushButton.DangerButton:disabled {
+    background-color: #151114;
+    color: #453237;
+    border-color: #23171a;
+}
+
 /* ── Line Edit (Input Fields) ────────────────────────────────────── */
 QLineEdit {
     background-color: #111d29;

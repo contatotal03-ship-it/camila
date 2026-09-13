@@ -35,12 +35,16 @@ __pycache__/
 secrets.py
 config_local.py
 *token*.json
+*.enc
+.licencia*
 
 # --- Carpetas de Scratch / Pruebas / Diagnósticos temporales ---
 scratch/
 **/scratch/
 pruebas/
 **/pruebas/
+NUEVAS/
+**/NUEVAS/
 diag*.py
 prueba*.py
 test*.py
