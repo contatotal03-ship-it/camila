@@ -23,6 +23,17 @@ _INFO_LICENCIA_SESION = {}
 
 
 def get_hwid():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    h_file = os.path.join(base_dir, ".hwid_cache")
+    if os.path.exists(h_file):
+        try:
+            with open(h_file, "r", encoding="utf-8") as f:
+                c_val = f.read().strip()
+            if c_val and len(c_val) == 64:
+                return c_val
+        except Exception:
+            pass
+
     uuid_str = None
     try:
         cmd = [
@@ -33,7 +44,7 @@ def get_hwid():
         ]
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        output = subprocess.check_output(cmd, startupinfo=startupinfo, timeout=4).decode().strip()
+        output = subprocess.check_output(cmd, startupinfo=startupinfo, timeout=8).decode().strip()
         if output and "swbemobject" not in output.lower() and len(output) > 10:
             uuid_str = output
     except Exception:
@@ -44,7 +55,7 @@ def get_hwid():
             cmd = "wmic csproduct get uuid"
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            output = subprocess.check_output(cmd, shell=True, startupinfo=startupinfo, timeout=4).decode().strip()
+            output = subprocess.check_output(cmd, shell=True, startupinfo=startupinfo, timeout=6).decode().strip()
             lines = [line.strip() for line in output.splitlines() if line.strip()]
             for line in lines:
                 if line.lower() != "uuid" and len(line) > 10:
@@ -62,7 +73,15 @@ def get_hwid():
             uuid_str = socket.gethostname()
 
     uuid_str = (uuid_str or "GENERIC_PC_ID").strip()
-    return hashlib.sha256(uuid_str.encode()).hexdigest()
+    hwid_final = hashlib.sha256(uuid_str.encode()).hexdigest()
+
+    try:
+        with open(h_file, "w", encoding="utf-8") as f:
+            f.write(hwid_final)
+    except Exception:
+        pass
+
+    return hwid_final
 
 
 def get_pc_name():
@@ -214,7 +233,39 @@ def activar_serial_cloud(serial: str, programa="Camila Conciliador") -> tuple[bo
 def validar_licencia(programa="Camila Conciliador") -> tuple[bool, str]:
     global _INFO_LICENCIA_SESION
     cache = _leer_cache_local()
+    hwid_actual = get_hwid()
+
     if not cache:
+        try:
+            db_nube_auto = descargar_base_datos_nube(timeout=5)
+            if db_nube_auto:
+                for s_k, s_v in db_nube_auto.items():
+                    if s_k.startswith("_"):
+                        continue
+                    eqs = s_v.get("equipos", [])
+                    if any(eq.get("hwid") == hwid_actual for eq in eqs):
+                        p_lic = (s_v.get("programa") or "TODOS").upper()
+                        prog_req = programa.upper()
+                        if p_lic == "TODOS" or prog_req in p_lic or "CAMILA" in p_lic or "DIANFLOW" in p_lic:
+                            estado = (s_v.get("estado") or "ACTIVO").upper()
+                            vence = s_v.get("vence", "PERMANENTE")
+                            if estado == "ACTIVO":
+                                if not vence or vence.upper() == "PERMANENTE" or datetime.now().date() <= datetime.strptime(vence, "%Y-%m-%d").date():
+                                    cache = {
+                                        "serial": s_k,
+                                        "cliente": s_v.get("cliente", "Usuario Autorizado"),
+                                        "programa": s_v.get("programa", programa),
+                                        "modulos": s_v.get("modulos", "TODOS"),
+                                        "vence": vence,
+                                        "estado": "ACTIVO",
+                                        "max_equipos": s_v.get("max_equipos", 1),
+                                        "fecha_activacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }
+                                    _guardar_cache_local(cache)
+                                    _INFO_LICENCIA_SESION = dict(cache)
+                                    return True, f"Licencia Activa ({cache.get('cliente', 'Usuario')})"
+        except Exception:
+            pass
         return False, "La aplicación no cuenta con una licencia de activación activa."
 
     serial = cache.get("serial", "")
