@@ -68,13 +68,16 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
         )
 
     col_vendedor = _resolve_col(df, 'Vendedor', ['vendedor'], label='Vendedor')
-    df = df.dropna(subset=[col_vendedor])
+    col_pedido = _find_col(df, ['referencia', 'pedido'])
 
-    if len(df) == 0:
-        raise ValueError(
-            "El archivo no tiene filas con datos de vendedor. "
-            f"Columnas disponibles: {list(df.columns)}"
-        )
+    # En exportaciones de Odoo, filtrar a las filas principales de pedidos (evita subfilas vacías)
+    if col_pedido and col_pedido in df.columns and df[col_pedido].notna().any():
+        df = df[df[col_pedido].notna()].copy()
+
+    # Si algún pedido no tiene vendedor (ej. Consumidor Final), asignarlo a 'SIN ASIGNAR'
+    # para no perder ese dinero y que la suma total sea exactamente 100% idéntica al archivo Excel
+    df[col_vendedor] = df[col_vendedor].fillna('SIN ASIGNAR')
+    df[col_vendedor] = df[col_vendedor].replace('', 'SIN ASIGNAR')
 
     col_fecha = _find_col(df, ['fecha', 'ech'])
     col_alm = _find_col(df, ['lmac'])
@@ -92,21 +95,10 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
     col_desc = _find_col(df, ['descuento'])
     col_coste = _find_col(df, ['coste'])
 
-    col_nota_credito_num = None
-    if 'Facturas/Número' in df.columns:
-        col_nota_credito_num = 'Facturas/Número'
-    elif col_fact_num and 'facturas' in col_fact_num.lower():
-        muestra = df[col_fact_num].head(20).dropna()
-        if not muestra.empty:
-            valores_muestra = muestra.astype(str).str.upper()
-            if valores_muestra.str.contains(r'^NCC').any() or valores_muestra.str.contains(r'^NC').any():
-                col_nota_credito_num = col_fact_num
-
+    # El archivo 'Pedido de venta (sale.order).xlsx' contiene 100% VENTAS comerciales.
+    # Las Notas Crédito se toman y descuentan exclusivamente del archivo de Asiento Contable.
     df['Es_Nota_Credito'] = False
-    if col_nota_credito_num and col_nota_credito_num in df.columns:
-        df['Es_Nota_Credito'] = df[col_nota_credito_num].astype(str).str.upper().str.contains(r'^NCC|^NC', na=False)
-
-    n_nc = df['Es_Nota_Credito'].sum()
+    n_nc = 0
     col_estado = _find_col(df, ['estado'])
     col_pedido = _find_col(df, ['referencia', 'pedido'])
 
@@ -552,8 +544,8 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
         ch1 = BarChart()
         ch1.type = "col"
         ch1.style = 10
-        ch1.width = 30
-        ch1.height = 14
+        ch1.width = 19
+        ch1.height = 13.5
         ch1.legend = None
         ch1.title = "Ventas vs Coste por Vendedor (Top 12)"
         ch1.y_axis.title = "Monto ($)"
@@ -571,7 +563,7 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
         ch2.title = "Participacion en Ventas"
         ch2.style = 10
         ch2.width = 16
-        ch2.height = 14
+        ch2.height = 13.5
         d2 = Reference(ws1, min_col=11, min_row=9, max_row=min(17, 9 + len(resumen)))
         c2 = Reference(ws1, min_col=2, min_row=10, max_row=min(17, 9 + len(resumen)))
         ch2.add_data(d2, titles_from_data=True)
@@ -579,7 +571,9 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
         ch2.dataLabels = DataLabelList()
         ch2.dataLabels.showPercent = True
         ch2.dataLabels.showCatName = False
-        ws1.add_chart(ch2, f"E{last + 2}")
+        ch2.dataLabels.showVal = False
+        ch2.legend.position = 'r'
+        ws1.add_chart(ch2, f"H{last + 2}")
 
         # ---- HOJA 2: CLIENTES POR VENDEDOR ----
         ws2 = writer.book.create_sheet("Clientes por Vendedor")
@@ -1369,6 +1363,10 @@ def procesar_dashboard_nc_asiento(ruta_asiento, ruta_salida):
     df['Origen_Vendedor'] = origenes_vendedor
     n_recuperadas = sum(1 for o in origenes_vendedor if o == 'Asignado por Cliente')
 
+    # Evitar colisión de columnas si el archivo ya contiene 'Fecha' y 'Fecha de factura'
+    if 'Fecha de factura' in df.columns and 'Fecha' in df.columns:
+        df = df.drop(columns=['Fecha'])
+
     df = df.rename(columns={
         col_num: 'Factura #',
         'Nombre de la empresa a mostrar en la factura': 'Cliente',
@@ -1377,6 +1375,8 @@ def procesar_dashboard_nc_asiento(ruta_asiento, ruta_salida):
         'Total con signo en moneda': 'Total',
         'Commercial Status': 'Estado',
     })
+    # Asegurar que todas las columnas sean estrictamente únicas
+    df = df.loc[:, ~df.columns.duplicated()].copy()
 
     col_v = 'Vendedor'
     col_f = 'Fecha'
