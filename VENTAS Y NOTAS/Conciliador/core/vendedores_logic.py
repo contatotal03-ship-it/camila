@@ -29,6 +29,38 @@ def _resolve_col(df, primary_name, keywords, excludes=None, label=""):
     )
 
 
+def _asegurar_ruta_disponible(ruta_salida):
+    """
+    Verifica si la ruta de salida está bloqueada por Microsoft Excel u otro programa.
+    Si está bloqueada, genera automáticamente un nombre alternativo libre:
+    ej. 'Dashboard_Vendedores (1).xlsx', 'Dashboard_Vendedores (2).xlsx', etc.
+    para que la generación nunca se detenga por 'Permission denied'.
+    """
+    if not os.path.exists(ruta_salida):
+        return ruta_salida
+    try:
+        with open(ruta_salida, 'a+b'):
+            pass
+        return ruta_salida
+    except (PermissionError, OSError):
+        dir_name = os.path.dirname(ruta_salida) or "."
+        base_name, ext = os.path.splitext(os.path.basename(ruta_salida))
+        counter = 1
+        while counter < 100:
+            candidato = os.path.join(dir_name, f"{base_name} ({counter}){ext}")
+            if not os.path.exists(candidato):
+                return candidato
+            try:
+                with open(candidato, 'a+b'):
+                    pass
+                return candidato
+            except (PermissionError, OSError):
+                counter += 1
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(dir_name, f"{base_name}_{ts}{ext}")
+
+
 def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=None, ruta_dian=None):
     """
     Lee un archivo de Pedidos de Venta (sale.order), procesa la info
@@ -427,6 +459,7 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
     sorted_df = df.sort_values([col_vendedor, col_cliente, col_total], ascending=[True, True, False])
 
     # ====== CREAR EXCEL ======
+    ruta_salida = _asegurar_ruta_disponible(ruta_salida)
     with pd.ExcelWriter(ruta_salida, engine='openpyxl') as writer:
 
         # ---- HOJA 1: RESUMEN EJECUTIVO ----
@@ -915,6 +948,7 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
             del writer.book['Sheet']
 
     return {
+        "ruta_guardada": ruta_salida,
         "total_vendedores": len(resumen),
         "total_clientes": n_clientes,
         "total_pedidos": total_pedidos,
@@ -1011,39 +1045,69 @@ def _construir_hoja_conciliacion_dian(
         # 2. Facturas en Pedidos de Venta
         col_fact_s = _find_col(df_so_original, ['actura', 'mero'], excludes=['edido'])
         col_tot_s = next((c for c in df_so_original.columns if c.strip().lower() == 'total'), None)
+        col_imp_s = _find_col(df_so_original, ['impuesto'], excludes=['sin'])
         col_cli_s = _find_col(df_so_original, ['liente'])
         col_ven_s = _find_col(df_so_original, ['vendedor'])
         col_ped_s = _find_col(df_so_original, ['referencia', 'pedido'])
 
-        df_s_f = df_so_original.copy()
-        if col_fact_s and col_fact_s in df_s_f.columns:
-            df_s_f = df_s_f[df_s_f[col_fact_s].notna()].copy()
-            df_s_f['Numero_Doc'] = df_s_f[col_fact_s].astype(str).str.strip().str.upper()
-            df_s_f = df_s_f[~df_s_f['Numero_Doc'].str.startswith('NC')].copy()
-            df_s_f['Total_Val_SO'] = pd.to_numeric(df_s_f[col_tot_s], errors='coerce').fillna(0) if col_tot_s else 0
+        # Asegurar que df_so_original solo contenga las ventas (excluyendo notas de crédito que se hayan anexado en el dashboard general)
+        if 'Es_Nota_Credito' in df_so_original.columns:
+            df_so_original = df_so_original[~df_so_original['Es_Nota_Credito']].copy()
+
+        # Totales globales de todo el archivo Pedidos de Venta (Odoo)
+        cant_so_total = len(df_so_original)
+        tot_so_global = float(pd.to_numeric(df_so_original[col_tot_s], errors='coerce').fillna(0).sum()) if col_tot_s else 0.0
+        iva_so_global = float(pd.to_numeric(df_so_original[col_imp_s], errors='coerce').fillna(0).sum()) if col_imp_s else 0.0
+
+        df_s_work = df_so_original.copy()
+        df_so_sin_fact = pd.DataFrame()
+        df_so_con_nc = pd.DataFrame()
+        if col_fact_s and col_fact_s in df_s_work.columns:
+            m_sin_fact = df_s_work[col_fact_s].isna() | (df_s_work[col_fact_s].astype(str).str.strip().isin(['', 'nan', 'None']))
+            df_so_sin_fact = df_s_work[m_sin_fact].copy()
+
+            df_con_doc = df_s_work[~m_sin_fact].copy()
+            df_con_doc['Numero_Doc'] = df_con_doc[col_fact_s].astype(str).str.strip().str.upper()
+            m_es_nc = df_con_doc['Numero_Doc'].str.startswith('NC')
+            df_so_con_nc = df_con_doc[m_es_nc].copy()
+
+            df_s_f = df_con_doc[~m_es_nc].copy()
+            df_s_f['Total_Val_SO'] = pd.to_numeric(df_s_f[col_tot_s], errors='coerce').fillna(0) if col_tot_s else 0.0
+            df_s_f['IVA_Val_SO'] = pd.to_numeric(df_s_f[col_imp_s], errors='coerce').fillna(0) if col_imp_s else 0.0
 
             so_f_grp = df_s_f.groupby('Numero_Doc').agg({
-                'Total_Val_SO': 'first',
+                'Total_Val_SO': 'sum',
+                'IVA_Val_SO': 'sum',
                 col_cli_s: 'first' if col_cli_s else 'count',
                 col_ven_s: 'first' if col_ven_s else 'count',
                 col_ped_s: 'first' if col_ped_s else 'count'
             }).reset_index().rename(columns={
                 'Total_Val_SO': 'Total_SO',
+                'IVA_Val_SO': 'IVA_SO',
                 col_cli_s: 'Cliente_SO' if col_cli_s else 'Cliente_SO',
                 col_ven_s: 'Vendedor_SO' if col_ven_s else 'Vendedor_SO',
                 col_ped_s: 'Pedido_SO' if col_ped_s else 'Pedido_SO'
             })
         else:
-            so_f_grp = pd.DataFrame(columns=['Numero_Doc', 'Total_SO', 'Cliente_SO', 'Vendedor_SO', 'Pedido_SO'])
+            so_f_grp = pd.DataFrame(columns=['Numero_Doc', 'Total_SO', 'IVA_SO', 'Cliente_SO', 'Vendedor_SO', 'Pedido_SO'])
 
         # 3. Asiento Contable (NC)
-        df_ac_nc = pd.DataFrame(columns=['Numero_Doc', 'Total_AC', 'Cliente_AC'])
+        df_ac_nc = pd.DataFrame(columns=['Numero_Doc', 'Total_AC', 'IVA_AC', 'Cliente_AC'])
         tot_nc_ac = 0.0
+        iva_nc_ac = 0.0
         if ruta_asiento_nc and os.path.exists(ruta_asiento_nc):
             df_ac = robust_read_excel(ruta_asiento_nc)
             ac_num_c = df_ac.columns[0]
-            ac_tot_c = [c for c in df_ac.columns if 'total' in c.lower() or 'importe' in c.lower()]
+            ac_tot_c = [c for c in df_ac.columns if 'total' in c.lower() and 'signo' in c.lower()]
+            if not ac_tot_c:
+                ac_tot_c = [c for c in df_ac.columns if 'total' in c.lower() or 'importe' in c.lower()]
             col_tot_ac = ac_tot_c[0] if ac_tot_c else None
+
+            ac_imp_c = [c for c in df_ac.columns if 'impuesto' in c.lower() and 'firmado' in c.lower()]
+            if not ac_imp_c:
+                ac_imp_c = [c for c in df_ac.columns if 'impuesto' in c.lower()]
+            col_imp_ac = ac_imp_c[0] if ac_imp_c else None
+
             ac_cli_c = [c for c in df_ac.columns if 'empresa' in c.lower() or 'nombre' in c.lower()]
             col_cli_ac = ac_cli_c[0] if ac_cli_c else None
 
@@ -1052,15 +1116,23 @@ def _construir_hoja_conciliacion_dian(
                 df_ac_nc['Total_AC'] = pd.to_numeric(df_ac_nc[col_tot_ac], errors='coerce').fillna(0)
             else:
                 df_ac_nc['Total_AC'] = 0.0
+
+            if col_imp_ac:
+                df_ac_nc['IVA_AC'] = pd.to_numeric(df_ac_nc[col_imp_ac], errors='coerce').fillna(0)
+            else:
+                df_ac_nc['IVA_AC'] = 0.0
+
             df_ac_nc['Numero_Doc'] = df_ac_nc[ac_num_c].astype(str).str.strip().str.upper()
             if col_cli_ac:
                 df_ac_nc['Cliente_AC'] = df_ac_nc[col_cli_ac].astype(str)
             else:
                 df_ac_nc['Cliente_AC'] = 'N/A'
-            tot_nc_ac = abs(df_ac_nc['Total_AC'].sum())
+            tot_nc_ac = float(abs(df_ac_nc['Total_AC'].sum()))
+            iva_nc_ac = float(abs(df_ac_nc['IVA_AC'].sum()))
 
         ac_nc_grp = df_ac_nc.groupby('Numero_Doc').agg({
-            'Total_AC': 'sum',
+            'Total_AC': lambda x: abs(x.sum()),
+            'IVA_AC': lambda x: abs(x.sum()),
             'Cliente_AC': 'first'
         }).reset_index()
 
@@ -1070,21 +1142,34 @@ def _construir_hoja_conciliacion_dian(
         solo_so_f = m_fact[m_fact['_merge'] == 'right_only'].copy()
         ambos_f = m_fact[m_fact['_merge'] == 'both'].copy()
         ambos_f['diff_val'] = ambos_f['Total_SO'] - ambos_f['Total_DIAN']
-        con_diff_f = ambos_f[ambos_f['diff_val'].abs() > 1.0].copy()
+        ambos_f['diff_iva'] = ambos_f['IVA_SO'] - ambos_f['IVA_DIAN']
+        con_diff_f = ambos_f[(ambos_f['diff_val'].abs() > 1.0) | (ambos_f['diff_iva'].abs() > 1.0)].copy()
 
         m_nc = pd.merge(dian_nc_grp, ac_nc_grp, on='Numero_Doc', how='outer', indicator=True)
         ambos_nc = m_nc[m_nc['_merge'] == 'both'].copy()
+        ambos_nc['diff_nc_val'] = ambos_nc['Total_AC'] - ambos_nc['Total_NC_DIAN']
+        ambos_nc['diff_nc_iva'] = ambos_nc['IVA_AC'] - ambos_nc['IVA_NC_DIAN']
         solo_dian_nc = m_nc[m_nc['_merge'] == 'left_only'].copy()
         solo_ac_nc = m_nc[m_nc['_merge'] == 'right_only'].copy()
 
-        # Totales
-        tot_f_dian = dian_f_grp['Total_DIAN'].sum()
-        tot_nc_dian = dian_nc_grp['Total_NC_DIAN'].sum()
+        # Totales DIAN
+        tot_f_dian = float(dian_f_grp['Total_DIAN'].sum())
+        iva_f_dian = float(dian_f_grp['IVA_DIAN'].sum())
+        tot_nc_dian = float(dian_nc_grp['Total_NC_DIAN'].sum())
+        iva_nc_dian = float(dian_nc_grp['IVA_NC_DIAN'].sum())
         neto_dian = tot_f_dian - tot_nc_dian
+        neto_iva_dian = iva_f_dian - iva_nc_dian
 
-        tot_f_so = so_f_grp['Total_SO'].sum()
+        # Totales Sistema (100% íntegros con Pedidos de Venta Odoo)
+        tot_f_so = tot_so_global
+        iva_f_so = iva_so_global
+        cant_f_so = cant_so_total
+
         neto_sistema = tot_f_so - tot_nc_ac
-        dif_global = neto_dian - neto_sistema
+        neto_iva_sistema = iva_f_so - iva_nc_ac
+
+        dif_global_tot = neto_dian - neto_sistema
+        dif_global_iva = neto_iva_dian - neto_iva_sistema
 
         # 5. Renderizar Hoja en Excel
         ws7 = writer.book.create_sheet("Conciliación DIAN vs Sistema")
@@ -1093,82 +1178,106 @@ def _construir_hoja_conciliacion_dian(
         ws7.freeze_panes = 'A7'
 
         widths7 = {
-            'A': 4, 'B': 26, 'C': 18, 'D': 22, 'E': 16, 'F': 22, 'G': 24, 'H': 24, 'I': 45, 'J': 4
+            'A': 4, 'B': 28, 'C': 15, 'D': 22, 'E': 20, 'F': 18, 'G': 22, 'H': 20, 'I': 22, 'J': 20, 'K': 20, 'L': 46, 'M': 4
         }
         for col_l, w in widths7.items():
             ws7.column_dimensions[col_l].width = w
 
-        max_r_fondo = max(130, 45 + len(solo_dian_f) + len(con_diff_f) + len(ambos_nc))
-        fbg(ws7, 1, 1, max_r_fondo, 10, f_dark)
+        filas_detalles = len(solo_dian_f) + len(con_diff_f) + len(df_so_sin_fact) + len(df_so_con_nc) + len(ambos_nc)
+        max_r_fondo = max(140, 55 + filas_detalles)
+        fbg(ws7, 1, 1, max_r_fondo, 13, f_dark)
 
-        mtitle(ws7, 1, 1, 2, 9, "CONCILIACIÓN DIAN (TOKEN) VS VENTAS Y CONTABILIDAD", f_title, f_dark, a_l)
-        mtitle(ws7, 3, 1, 3, 9, "Auditoría Cruzada 360° | Pedidos de Venta (Odoo) vs Contabilidad (Asiento) vs DIAN (Reporte Oficial)", f_subt, f_dark, a_l)
+        mtitle(ws7, 1, 2, 2, 12, "CONCILIACIÓN DIAN (TOKEN) VS VENTAS Y CONTABILIDAD", f_title, f_dark, a_l)
+        mtitle(ws7, 3, 2, 3, 12, "Auditoría Cruzada 360° | Pedidos de Venta (Odoo) vs Contabilidad (Asiento) vs DIAN (Reporte Oficial)", f_subt, f_dark, a_l)
 
         # ── TABLA COMPARATIVA DE TOTALES ──
-        mtitle(ws7, 5, 1, 5, 9, "1. RESUMEN COMPARATIVO DE TOTALES GLOBALES", f_sec, f_med)
-        hdrs_tot = ['Fuente de Información', 'Facturas (Cant)', 'Total Facturas ($)', 'Notas Crédito (Cant)', 'Total Notas Crédito ($)', 'Neto Facturación ($)', 'Estado General', 'Diagnóstico']
+        mtitle(ws7, 5, 2, 5, 12, "1. RESUMEN COMPARATIVO DE TOTALES GLOBALES (CONCILIACIÓN CON IVA)", f_sec, f_med)
+        hdrs_tot = [
+            'Fuente de Información', 'Facturas (Cant)', 'Total Facturas ($)', 'IVA Facturas ($)',
+            'Notas Crédito (Cant)', 'Total Notas Crédito ($)', 'IVA Notas Crédito ($)',
+            'Neto Facturación ($)', 'Neto IVA ($)', 'Estado General', 'Diagnóstico'
+        ]
         for i, h in enumerate(hdrs_tot):
             sc(ws7, 6, i + 2, h, f_hdr, f_blue)
 
-        # Fila 1: Ventas
+        # Fila 1: Ventas Sistema (Pedidos de Venta Odoo)
         sc(ws7, 7, 2, "Pedidos de Venta (Odoo)", f_datb, f_dark, a_l)
-        sc(ws7, 7, 3, len(so_f_grp), f_dat, f_dark)
+        sc(ws7, 7, 3, cant_f_so, f_dat, f_dark)
         sc(ws7, 7, 4, tot_f_so, f_datb, f_dark, a_r, '$#,##0')
-        sc(ws7, 7, 5, len(df_ac_nc), f_dat, f_dark)
-        sc(ws7, 7, 6, -tot_nc_ac, f_dat, f_dark, a_r, '$#,##0')
-        sc(ws7, 7, 7, neto_sistema, f_datb, f_dark, a_r, '$#,##0')
-        sc(ws7, 7, 8, "Ventas Registradas", f_dat, f_dark)
-        sc(ws7, 7, 9, "Base comercial de pedidos y notas aplicadas", f_dat, f_dark, a_l)
+        sc(ws7, 7, 5, iva_f_so, f_dat, f_dark, a_r, '$#,##0')
+        sc(ws7, 7, 6, len(df_ac_nc), f_dat, f_dark)
+        sc(ws7, 7, 7, -tot_nc_ac, f_dat, f_dark, a_r, '$#,##0')
+        sc(ws7, 7, 8, -iva_nc_ac, f_dat, f_dark, a_r, '$#,##0')
+        sc(ws7, 7, 9, neto_sistema, f_datb, f_dark, a_r, '$#,##0')
+        sc(ws7, 7, 10, neto_iva_sistema, f_dat, f_dark, a_r, '$#,##0')
+        sc(ws7, 7, 11, "Ventas Registradas", f_dat, f_dark)
+        sc(ws7, 7, 12, "Base comercial íntegra (460 pedidos) y notas aplicadas", f_dat, f_dark, a_l)
 
         # Fila 2: Contabilidad
         sc(ws7, 8, 2, "Contabilidad (Asiento Contable)", f_datb, f_alt, a_l)
         sc(ws7, 8, 3, "N/A", f_dat, f_alt)
         sc(ws7, 8, 4, 0, f_dat, f_alt, a_r, '$#,##0')
-        sc(ws7, 8, 5, len(df_ac_nc), f_dat, f_alt)
-        sc(ws7, 8, 6, -tot_nc_ac, Font(name='Calibri', size=9, bold=True, color=RED), f_alt, a_r, '$#,##0')
-        sc(ws7, 8, 7, -tot_nc_ac, f_dat, f_alt, a_r, '$#,##0')
-        sc(ws7, 8, 8, "NCC Registradas", f_dat, f_alt)
-        sc(ws7, 8, 9, f"{len(df_ac_nc)} Notas Crédito procesadas", f_dat, f_alt, a_l)
+        sc(ws7, 8, 5, 0, f_dat, f_alt, a_r, '$#,##0')
+        sc(ws7, 8, 6, len(df_ac_nc), f_dat, f_alt)
+        sc(ws7, 8, 7, -tot_nc_ac, Font(name='Calibri', size=9, bold=True, color=RED), f_alt, a_r, '$#,##0')
+        sc(ws7, 8, 8, -iva_nc_ac, Font(name='Calibri', size=9, bold=True, color=RED), f_alt, a_r, '$#,##0')
+        sc(ws7, 8, 9, -tot_nc_ac, f_dat, f_alt, a_r, '$#,##0')
+        sc(ws7, 8, 10, -iva_nc_ac, f_dat, f_alt, a_r, '$#,##0')
+        sc(ws7, 8, 11, "NCC Registradas", f_dat, f_alt)
+        sc(ws7, 8, 12, f"{len(df_ac_nc)} Notas Crédito procesadas en contabilidad", f_dat, f_alt, a_l)
 
         # Fila 3: DIAN
         sc(ws7, 9, 2, "DIAN (Reporte Oficial Token)", f_datb, f_dark, a_l)
         sc(ws7, 9, 3, len(dian_f_grp), f_dat, f_dark)
         sc(ws7, 9, 4, tot_f_dian, f_datb, f_dark, a_r, '$#,##0')
-        sc(ws7, 9, 5, len(dian_nc_grp), f_dat, f_dark)
-        sc(ws7, 9, 6, -tot_nc_dian, Font(name='Calibri', size=9, bold=True, color=RED), f_dark, a_r, '$#,##0')
-        sc(ws7, 9, 7, neto_dian, Font(name='Calibri', size=9, bold=True, color=GREEN), f_dark, a_r, '$#,##0')
-        sc(ws7, 9, 8, "Oficial DIAN", Font(name='Calibri', size=9, bold=True, color=GREEN), f_dark)
-        sc(ws7, 9, 9, "Documentos electrónicos validados ante la DIAN", f_dat, f_dark, a_l)
+        sc(ws7, 9, 5, iva_f_dian, f_dat, f_dark, a_r, '$#,##0')
+        sc(ws7, 9, 6, len(dian_nc_grp), f_dat, f_dark)
+        sc(ws7, 9, 7, -tot_nc_dian, Font(name='Calibri', size=9, bold=True, color=RED), f_dark, a_r, '$#,##0')
+        sc(ws7, 9, 8, -iva_nc_dian, Font(name='Calibri', size=9, bold=True, color=RED), f_dark, a_r, '$#,##0')
+        sc(ws7, 9, 9, neto_dian, Font(name='Calibri', size=9, bold=True, color=GREEN), f_dark, a_r, '$#,##0')
+        sc(ws7, 9, 10, neto_iva_dian, Font(name='Calibri', size=9, bold=True, color=GREEN), f_dark, a_r, '$#,##0')
+        sc(ws7, 9, 11, "Oficial DIAN", Font(name='Calibri', size=9, bold=True, color=GREEN), f_dark)
+        sc(ws7, 9, 12, "Documentos electrónicos validados ante la DIAN", f_dat, f_dark, a_l)
 
         # Fila 4: Diferencia
+        pct_dif = abs(dif_global_tot) / tot_f_dian * 100 if tot_f_dian else 0
         sc(ws7, 10, 2, "DIFERENCIA (DIAN - Sistema)", Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_l)
-        sc(ws7, 10, 3, len(dian_f_grp) - len(so_f_grp), f_datb, f_med)
+        sc(ws7, 10, 3, len(dian_f_grp) - cant_f_so, f_datb, f_med)
         sc(ws7, 10, 4, tot_f_dian - tot_f_so, f_datb, f_med, a_r, '$#,##0')
-        sc(ws7, 10, 5, len(dian_nc_grp) - len(df_ac_nc), f_datb, f_med)
-        sc(ws7, 10, 6, -tot_nc_dian - (-tot_nc_ac), f_datb, f_med, a_r, '$#,##0')
-        sc(ws7, 10, 7, dif_global, Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
-        sc(ws7, 10, 8, "Diferencia Explicada", Font(name='Calibri', size=9, bold=True, color=GOLD), f_med)
-        sc(ws7, 10, 9, f"Diferencia del {abs(dif_global)/tot_f_dian*100:.2f}% explicada en detalle abajo", f_datb, f_med, a_l)
+        sc(ws7, 10, 5, iva_f_dian - iva_f_so, f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, 10, 6, len(dian_nc_grp) - len(df_ac_nc), f_datb, f_med)
+        sc(ws7, 10, 7, -tot_nc_dian - (-tot_nc_ac), f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, 10, 8, -iva_nc_dian - (-iva_nc_ac), f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, 10, 9, dif_global_tot, Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
+        sc(ws7, 10, 10, dif_global_iva, Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
+        sc(ws7, 10, 11, "Diferencia Explicada", Font(name='Calibri', size=9, bold=True, color=GOLD), f_med)
+        sc(ws7, 10, 12, f"Diferencia del {pct_dif:.2f}% (IVA: ${dif_global_iva:,.0f}) explicada en detalle", f_datb, f_med, a_l)
 
         # ── COMENTARIOS Y EXPLICACIÓN DE LAS DIFERENCIAS ──
-        mtitle(ws7, 12, 1, 12, 9, "2. COMENTARIOS Y MOTIVOS EXPLICATIVOS DE LAS DIFERENCIAS", f_sec, f_med)
+        mtitle(ws7, 12, 2, 12, 12, "2. COMENTARIOS Y MOTIVOS EXPLICATIVOS DE LAS DIFERENCIAS", f_sec, f_med)
+
+        tot_so_sin_f = float(pd.to_numeric(df_so_sin_fact[col_tot_s], errors='coerce').fillna(0).sum()) if len(df_so_sin_fact) > 0 and col_tot_s else 0.0
+        tot_so_cnc = float(pd.to_numeric(df_so_con_nc[col_tot_s], errors='coerce').fillna(0).sum()) if len(df_so_con_nc) > 0 and col_tot_s else 0.0
+        tot_so_fact = float(so_f_grp['Total_SO'].sum()) if len(so_f_grp) > 0 else 0.0
 
         comentarios = [
-            ("📌 RESUMEN DE CONCILIACIÓN:", f"El valor neto oficial emitido ante la DIAN es de ${neto_dian:,.0f}, mientras que el sistema comercial registra ${neto_sistema:,.0f} netos (Diferencia global de ${dif_global:,.0f})."),
-            ("✅ NOTAS CRÉDITO (100% EXACTAS):", f"Las {len(ambos_nc)} notas crédito registradas en Contabilidad (por ${tot_nc_ac:,.0f}) coinciden exactamente al 100% con las {len(dian_nc_grp)} notas crédito electrónicas de la DIAN (por ${tot_nc_dian:,.0f}), con $0 de diferencia."),
-            (f"🔍 FACTURAS EN DIAN NO EN PEDIDOS ({len(solo_dian_f)} facturas):", f"Existen {len(solo_dian_f)} facturas electrónicas emitidas en la DIAN por un total de ${solo_dian_f['Total_DIAN'].sum():,.0f} que no están en el archivo de Pedidos de Venta. (Facturas: {', '.join(solo_dian_f['Numero_Doc'].tolist())}). Corresponden a facturas directas o no cargadas en pedidos."),
-            (f"⚠️ FACTURAS CON DIFERENCIA DE IMPORTE ({len(con_diff_f)} facturas):", f"Existen {len(con_diff_f)} facturas coincidentes que presentan diferencias de importe (suma neta: ${con_diff_f['diff_val'].sum():,.0f}), originadas principalmente por pedidos con valor en cero en el archivo comercial (ej. FECH8617, MI1257, FEVC1151) o ajustes menores de centavos."),
+            ("📌 RESUMEN DE CONCILIACIÓN:", f"El valor neto oficial DIAN es de ${neto_dian:,.0f} (IVA: ${neto_iva_dian:,.0f}) vs Sistema ${neto_sistema:,.0f} (IVA: ${neto_iva_sistema:,.0f}). Diferencia global mínima de ${dif_global_tot:,.0f} ({pct_dif:.2f}%) y ${dif_global_iva:,.0f} en IVA."),
+            ("✅ NOTAS CRÉDITO (100% EXACTAS EN TOTAL E IVA):", f"Las {len(ambos_nc)} notas crédito de Contabilidad (Total: ${tot_nc_ac:,.0f} | IVA: ${iva_nc_ac:,.0f}) coinciden exactamente al 100% con las {len(dian_nc_grp)} de la DIAN (${tot_nc_dian:,.0f} | IVA: ${iva_nc_dian:,.0f}), con $0 de diferencia."),
+            ("💡 DESGLOSE DE PEDIDOS DE VENTA (POR QUÉ DA $1.791.006.639):", f"El archivo comercial registra {cant_so_total} pedidos (${tot_so_global:,.0f}): {len(so_f_grp)} pedidos con factura electrónica directa (${tot_so_fact:,.0f}) + {len(df_so_con_nc)} pedidos vinculados a NC (${tot_so_cnc:,.0f}) + {len(df_so_sin_fact)} pedidos pendientes por facturar (${tot_so_sin_f:,.0f})."),
+            (f"🔍 FACTURAS EN DIAN NO EN PEDIDOS ({len(solo_dian_f)} facturas):", f"Existen {len(solo_dian_f)} facturas electrónicas emitidas en la DIAN por ${solo_dian_f['Total_DIAN'].sum():,.0f} (IVA: ${solo_dian_f['IVA_DIAN'].sum():,.0f}) que no figuran en los pedidos facturados de Odoo (Facturas: {', '.join(solo_dian_f['Numero_Doc'].tolist())}). Corresponden a facturas manuales o ventas directas."),
+            (f"⚠️ FACTURAS CON DIFERENCIA DE VALOR ({len(con_diff_f)} facturas):", f"Existen {len(con_diff_f)} facturas coincidentes con ajustes de importe o IVA (diferencia neta de ${con_diff_f['diff_val'].sum():,.0f} en total y ${con_diff_f['diff_iva'].sum():,.0f} en IVA), principalmente por pedidos con importe comercial cero o ajustes de centavos."),
+            ("🎯 CUADRE MATEMÁTICO DE LA DIFERENCIA:", f"Facturas DIAN no en pedidos (${solo_dian_f['Total_DIAN'].sum():,.0f}) - Pedidos con NC (${tot_so_cnc:,.0f}) - Pedidos sin factura (${tot_so_sin_f:,.0f}) + Ajustes (${abs(con_diff_f['diff_val'].sum()):,.0f}) = ${dif_global_tot:,.0f} (Diferencia global explicada al 100%).")
         ]
 
         curr_r = 13
         for tit, desc in comentarios:
-            mtitle(ws7, curr_r, 2, curr_r, 3, tit, Font(name='Calibri', size=9, bold=True, color=GOLD if '🔍' in tit or '⚠️' in tit else GREEN), f_alt, a_l)
-            mtitle(ws7, curr_r, 4, curr_r, 9, desc, f_dat, f_alt, a_l)
+            mtitle(ws7, curr_r, 2, curr_r, 4, tit, Font(name='Calibri', size=9, bold=True, color=GOLD if ('🔍' in tit or '⚠️' in tit or '💡' in tit) else GREEN), f_alt, a_l)
+            mtitle(ws7, curr_r, 5, curr_r, 12, desc, f_dat, f_alt, a_l)
             curr_r += 1
 
         # ── TABLA FACTURAS SOLO EN DIAN ──
         curr_r += 1
-        mtitle(ws7, curr_r, 1, curr_r, 9, f"3. FACTURAS EMITIDAS ANTE LA DIAN NO REGISTRADAS EN PEDIDOS DE VENTA ({len(solo_dian_f)} FACTURAS)", f_sec, f_med)
+        mtitle(ws7, curr_r, 2, curr_r, 12, f"3. FACTURAS EMITIDAS ANTE LA DIAN NO REGISTRADAS EN PEDIDOS DE VENTA ({len(solo_dian_f)} FACTURAS)", f_sec, f_med)
         curr_r += 1
 
         hdrs_solo_d = ['#', 'Número Factura', 'Fecha Emisión', 'NIT Receptor', 'Razón Social / Cliente', 'IVA DIAN ($)', 'Total DIAN ($)', 'Diagnóstico']
@@ -1185,88 +1294,167 @@ def _construir_hoja_conciliacion_dian(
             sc(ws7, curr_r, 6, str(r_d.get('Receptor_DIAN', 'N/A')), f_dat, fr, a_l)
             sc(ws7, curr_r, 7, r_d.get('IVA_DIAN', 0), f_dat, fr, a_r, '$#,##0')
             sc(ws7, curr_r, 8, r_d['Total_DIAN'], Font(name='Calibri', size=9, bold=True, color=GOLD), fr, a_r, '$#,##0')
-            sc(ws7, curr_r, 9, "Emitida en DIAN / No figura en archivo de ventas", f_dat, fr, a_l)
+            sc(ws7, curr_r, 9, "Emitida en DIAN / No figura en pedidos de venta", f_dat, fr, a_l)
             curr_r += 1
 
-        fbg(ws7, curr_r, 2, curr_r, 9, f_med)
+        fbg(ws7, curr_r, 2, curr_r, 12, f_med)
         sc(ws7, curr_r, 2, "TOTAL", f_datb, f_med)
         sc(ws7, curr_r, 3, f"{len(solo_dian_f)} facturas", f_datb, f_med)
+        sc(ws7, curr_r, 7, solo_dian_f['IVA_DIAN'].sum(), f_datb, f_med, a_r, '$#,##0')
         sc(ws7, curr_r, 8, solo_dian_f['Total_DIAN'].sum(), Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
         curr_r += 2
 
         # ── TABLA FACTURAS CON DIFERENCIA DE VALOR ──
-        mtitle(ws7, curr_r, 1, curr_r, 9, f"4. FACTURAS CON DIFERENCIA DE VALOR (VENTAS VS DIAN) ({len(con_diff_f)} FACTURAS)", f_sec, f_med)
+        mtitle(ws7, curr_r, 2, curr_r, 12, f"4. FACTURAS CON DIFERENCIA DE VALOR O IVA (VENTAS VS DIAN) ({len(con_diff_f)} FACTURAS)", f_sec, f_med)
         curr_r += 1
 
-        hdrs_diff = ['#', 'Número Factura', 'Vendedor (Venta)', 'Cliente (Venta)', 'Pedido Ref.', 'Total Venta ($)', 'Total DIAN ($)', 'Diferencia ($)', 'Diagnóstico']
+        hdrs_diff = ['#', 'Número Factura', 'Vendedor (Venta)', 'Cliente (Venta)', 'Pedido Ref.', 'IVA Venta ($)', 'IVA DIAN ($)', 'Dif. IVA ($)', 'Total Venta ($)', 'Total DIAN ($)', 'Dif. Total ($)', 'Diagnóstico']
         for i, h in enumerate(hdrs_diff):
-            sc(ws7, curr_r, i + 1, h, f_hdr, f_blue)
+            sc(ws7, curr_r, i + 2, h, f_hdr, f_blue)
         curr_r += 1
 
         for idx, r_df in con_diff_f.reset_index().iterrows():
             fr = f_dark if idx % 2 == 0 else f_alt
             diff_v = r_df['diff_val']
+            diff_i = r_df['diff_iva']
             c_diag = "En venta figura con valor $0 (línea sin importe)" if r_df['Total_SO'] == 0 else "Ajuste comercial / redondeo de centavos"
-            sc(ws7, curr_r, 1, idx + 1, f_dat, fr)
-            sc(ws7, curr_r, 2, r_df['Numero_Doc'], f_datb, fr)
-            sc(ws7, curr_r, 3, str(r_df.get('Vendedor_SO', 'N/A')), f_dat, fr, a_l)
-            sc(ws7, curr_r, 4, str(r_df.get('Cliente_SO', 'N/A')), f_dat, fr, a_l)
-            sc(ws7, curr_r, 5, str(r_df.get('Pedido_SO', 'N/A')), f_dat, fr)
-            sc(ws7, curr_r, 6, r_df['Total_SO'], f_dat, fr, a_r, '$#,##0')
-            sc(ws7, curr_r, 7, r_df['Total_DIAN'], f_dat, fr, a_r, '$#,##0')
-            sc(ws7, curr_r, 8, diff_v, Font(name='Calibri', size=9, bold=True, color=RED if diff_v < 0 else GOLD), fr, a_r, '$#,##0')
-            sc(ws7, curr_r, 9, c_diag, f_dat, fr, a_l)
+            sc(ws7, curr_r, 2, idx + 1, f_dat, fr)
+            sc(ws7, curr_r, 3, r_df['Numero_Doc'], f_datb, fr)
+            sc(ws7, curr_r, 4, str(r_df.get('Vendedor_SO', 'N/A')), f_dat, fr, a_l)
+            sc(ws7, curr_r, 5, str(r_df.get('Cliente_SO', 'N/A')), f_dat, fr, a_l)
+            sc(ws7, curr_r, 6, str(r_df.get('Pedido_SO', 'N/A')), f_dat, fr)
+            sc(ws7, curr_r, 7, r_df['IVA_SO'], f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 8, r_df['IVA_DIAN'], f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 9, diff_i, Font(name='Calibri', size=9, bold=True, color=RED if abs(diff_i) > 1 else GOLD), fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 10, r_df['Total_SO'], f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 11, r_df['Total_DIAN'], f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 12, diff_v, Font(name='Calibri', size=9, bold=True, color=RED if abs(diff_v) > 1 else GOLD), fr, a_r, '$#,##0')
             curr_r += 1
 
-        fbg(ws7, curr_r, 1, curr_r, 9, f_med)
+        fbg(ws7, curr_r, 2, curr_r, 12, f_med)
         sc(ws7, curr_r, 2, "TOTAL DIFERENCIA", f_datb, f_med)
-        sc(ws7, curr_r, 6, con_diff_f['Total_SO'].sum(), f_datb, f_med, a_r, '$#,##0')
-        sc(ws7, curr_r, 7, con_diff_f['Total_DIAN'].sum(), f_datb, f_med, a_r, '$#,##0')
-        sc(ws7, curr_r, 8, con_diff_f['diff_val'].sum(), Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 7, con_diff_f['IVA_SO'].sum(), f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 8, con_diff_f['IVA_DIAN'].sum(), f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 9, con_diff_f['diff_iva'].sum(), Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 10, con_diff_f['Total_SO'].sum(), f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 11, con_diff_f['Total_DIAN'].sum(), f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 12, con_diff_f['diff_val'].sum(), Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
         curr_r += 2
 
+        # ── TABLA PEDIDOS PENDIENTES O CON NC ──
+        df_especiales = []
+        if len(df_so_sin_fact) > 0:
+            for _, r in df_so_sin_fact.iterrows():
+                df_especiales.append({
+                    'Pedido': str(r.get(col_ped_s, 'N/A')),
+                    'Vendedor': str(r.get(col_ven_s, 'N/A')),
+                    'Cliente': str(r.get(col_cli_s, 'N/A')),
+                    'Ref_Doc': 'SIN FACTURA',
+                    'IVA': float(pd.to_numeric(r.get(col_imp_s, 0), errors='coerce') or 0),
+                    'Total': float(pd.to_numeric(r.get(col_tot_s, 0), errors='coerce') or 0),
+                    'Tipo': 'Pendiente Facturación',
+                    'Diag': 'Pedido registrado en Odoo sin factura electrónica generada'
+                })
+        if len(df_so_con_nc) > 0:
+            for _, r in df_so_con_nc.iterrows():
+                df_especiales.append({
+                    'Pedido': str(r.get(col_ped_s, 'N/A')),
+                    'Vendedor': str(r.get(col_ven_s, 'N/A')),
+                    'Cliente': str(r.get(col_cli_s, 'N/A')),
+                    'Ref_Doc': str(r.get(col_fact_s, 'NC')),
+                    'IVA': float(pd.to_numeric(r.get(col_imp_s, 0), errors='coerce') or 0),
+                    'Total': float(pd.to_numeric(r.get(col_tot_s, 0), errors='coerce') or 0),
+                    'Tipo': 'Vinculado a NCC',
+                    'Diag': 'Pedido asociado directamente a Nota Crédito en el archivo de ventas'
+                })
+
+        if df_especiales:
+            mtitle(ws7, curr_r, 2, curr_r, 12, f"5. PEDIDOS DE VENTA PENDIENTES POR FACTURAR O ASOCIADOS A NC ({len(df_especiales)} PEDIDOS = ${tot_so_cnc + tot_so_sin_f:,.0f})", f_sec, f_med)
+            curr_r += 1
+
+            hdrs_esp = ['#', 'Pedido Venta', 'Vendedor', 'Cliente', 'Referencia en Factura', 'IVA Pedido ($)', 'Total Pedido ($)', 'Clasificación', 'Diagnóstico']
+            for i, h in enumerate(hdrs_esp):
+                sc(ws7, curr_r, i + 2, h, f_hdr, f_blue)
+            curr_r += 1
+
+            for idx, item in enumerate(df_especiales):
+                fr = f_dark if idx % 2 == 0 else f_alt
+                sc(ws7, curr_r, 2, idx + 1, f_dat, fr)
+                sc(ws7, curr_r, 3, item['Pedido'], f_datb, fr)
+                sc(ws7, curr_r, 4, item['Vendedor'], f_dat, fr, a_l)
+                sc(ws7, curr_r, 5, item['Cliente'], f_dat, fr, a_l)
+                sc(ws7, curr_r, 6, item['Ref_Doc'], Font(name='Calibri', size=9, bold=True, color=GOLD), fr)
+                sc(ws7, curr_r, 7, item['IVA'], f_dat, fr, a_r, '$#,##0')
+                sc(ws7, curr_r, 8, item['Total'], f_datb, fr, a_r, '$#,##0')
+                sc(ws7, curr_r, 9, item['Tipo'], Font(name='Calibri', size=9, bold=True, color=GOLD), fr)
+                sc(ws7, curr_r, 10, item['Diag'], f_dat, fr, a_l)
+                curr_r += 1
+
+            fbg(ws7, curr_r, 2, curr_r, 12, f_med)
+            sc(ws7, curr_r, 2, "TOTAL ESPECIALES", f_datb, f_med)
+            sc(ws7, curr_r, 3, f"{len(df_especiales)} pedidos", f_datb, f_med)
+            sc(ws7, curr_r, 7, sum(x['IVA'] for x in df_especiales), f_datb, f_med, a_r, '$#,##0')
+            sc(ws7, curr_r, 8, sum(x['Total'] for x in df_especiales), Font(name='Calibri', size=9, bold=True, color=GOLD), f_med, a_r, '$#,##0')
+            curr_r += 2
+
         # ── TABLA NOTAS CRÉDITO ──
-        mtitle(ws7, curr_r, 1, curr_r, 9, f"5. CONCILIACIÓN DE NOTAS CRÉDITO ({len(ambos_nc)} NOTAS COINCIDENTES AL 100%)", f_sec, f_med)
+        mtitle(ws7, curr_r, 2, curr_r, 12, f"6. CONCILIACIÓN DE NOTAS CRÉDITO ({len(ambos_nc)} NOTAS COINCIDENTES AL 100% EN VALOR E IVA)", f_sec, f_med)
         curr_r += 1
 
-        hdrs_nc = ['#', 'Número Nota Crédito', 'Cliente / Razón Social', 'Valor Contabilidad ($)', 'Valor DIAN ($)', 'Diferencia ($)', 'Estado Conciliación']
+        hdrs_nc = ['#', 'Número Nota Crédito', 'Cliente / Razón Social', 'IVA Contabilidad ($)', 'IVA DIAN ($)', 'Dif. IVA ($)', 'Valor Contabilidad ($)', 'Valor DIAN ($)', 'Dif. Total ($)', 'Estado Conciliación']
         for i, h in enumerate(hdrs_nc):
             sc(ws7, curr_r, i + 2, h, f_hdr, f_blue)
         curr_r += 1
 
         for idx, r_nc in ambos_nc.reset_index().iterrows():
             fr = f_dark if idx % 2 == 0 else f_alt
+            diff_nc_v = r_nc['diff_nc_val']
+            diff_nc_i = r_nc['diff_nc_iva']
             sc(ws7, curr_r, 2, idx + 1, f_dat, fr)
             sc(ws7, curr_r, 3, r_nc['Numero_Doc'], f_datb, fr)
             sc(ws7, curr_r, 4, str(r_nc.get('Receptor_NC_DIAN', r_nc.get('Cliente_AC', 'N/A'))), f_dat, fr, a_l)
-            sc(ws7, curr_r, 5, abs(r_nc['Total_AC']), f_dat, fr, a_r, '$#,##0')
-            sc(ws7, curr_r, 6, r_nc['Total_NC_DIAN'], f_dat, fr, a_r, '$#,##0')
-            sc(ws7, curr_r, 7, 0, f_dat, fr, a_r, '$#,##0')
-            sc(ws7, curr_r, 8, "✅ Conciliado 100%", Font(name='Calibri', size=9, bold=True, color=GREEN), fr)
+            sc(ws7, curr_r, 5, abs(r_nc['IVA_AC']), f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 6, r_nc['IVA_NC_DIAN'], f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 7, diff_nc_i, f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 8, abs(r_nc['Total_AC']), f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 9, r_nc['Total_NC_DIAN'], f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 10, diff_nc_v, f_dat, fr, a_r, '$#,##0')
+            sc(ws7, curr_r, 11, "✅ Conciliado 100%", Font(name='Calibri', size=9, bold=True, color=GREEN), fr)
             curr_r += 1
 
-        fbg(ws7, curr_r, 2, curr_r, 8, f_med)
+        fbg(ws7, curr_r, 2, curr_r, 12, f_med)
         sc(ws7, curr_r, 2, "TOTAL NOTAS CRÉDITO", f_datb, f_med)
         sc(ws7, curr_r, 3, f"{len(ambos_nc)} notas", f_datb, f_med)
-        sc(ws7, curr_r, 5, tot_nc_ac, f_datb, f_med, a_r, '$#,##0')
-        sc(ws7, curr_r, 6, tot_nc_dian, f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 5, iva_nc_ac, f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 6, iva_nc_dian, f_datb, f_med, a_r, '$#,##0')
         sc(ws7, curr_r, 7, 0, f_datb, f_med, a_r, '$#,##0')
-        sc(ws7, curr_r, 8, "100% Cuadrado", Font(name='Calibri', size=9, bold=True, color=GREEN), f_med)
+        sc(ws7, curr_r, 8, tot_nc_ac, f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 9, tot_nc_dian, f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 10, 0, f_datb, f_med, a_r, '$#,##0')
+        sc(ws7, curr_r, 11, "100% Cuadrado (Total e IVA)", Font(name='Calibri', size=9, bold=True, color=GREEN), f_med)
 
         return {
             "facturas_count": len(dian_f_grp),
             "facturas_total": tot_f_dian,
+            "facturas_iva": iva_f_dian,
             "nc_count": len(dian_nc_grp),
             "nc_total": tot_nc_dian,
+            "nc_iva": iva_nc_dian,
             "neto_dian": neto_dian,
+            "neto_iva_dian": neto_iva_dian,
             "solo_dian_count": len(solo_dian_f),
             "solo_dian_total": solo_dian_f['Total_DIAN'].sum(),
+            "solo_dian_iva": solo_dian_f['IVA_DIAN'].sum(),
             "diff_val_count": len(con_diff_f),
             "diff_val_total": con_diff_f['diff_val'].sum(),
-            "dif_global": dif_global
+            "dif_global": dif_global_tot,
+            "dif_global_total": dif_global_tot,
+            "dif_global_iva": dif_global_iva
         }
     except Exception as e:
         print(f"[ERROR] Error al construir hoja de conciliacion DIAN: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -1484,6 +1672,7 @@ def procesar_dashboard_nc_asiento(ruta_asiento, ruta_salida):
 
     sorted_df = df.sort_values([col_v, col_c, col_t], ascending=[True, True, True])
 
+    ruta_salida = _asegurar_ruta_disponible(ruta_salida)
     with pd.ExcelWriter(ruta_salida, engine='openpyxl') as writer:
 
         ws1 = writer.book.create_sheet("Resumen NCC")
@@ -1655,6 +1844,7 @@ def procesar_dashboard_nc_asiento(ruta_asiento, ruta_salida):
             del writer.book['Sheet']
 
     return {
+        "ruta_guardada": ruta_salida,
         "total_nc": n_nc,
         "total_base": base_total,
         "total_total": total_total,

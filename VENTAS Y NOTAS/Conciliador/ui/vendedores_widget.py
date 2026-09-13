@@ -333,54 +333,88 @@ class VendedoresWidget(QWidget):
         self.thread.error.connect(self.on_error)
         self.thread.start()
 
+    def _traducir_error(self, err_msg):
+        msg_str = str(err_msg)
+        if "Permission denied" in msg_str or "Errno 13" in msg_str:
+            import re
+            m = re.search(r"'(.*?)'", msg_str)
+            fname = os.path.basename(m.group(1)) if m else "el archivo de Excel"
+            return (
+                f"⚠️ El archivo '{fname}' está actualmente ABIERTO en Microsoft Excel.\n\n"
+                "Windows no permite modificar archivos mientras Excel los tiene abiertos.\n\n"
+                "Solución fácil:\n"
+                "1. Ve a Excel y CIERRA esa ventana.\n"
+                "2. Vuelve a pulsar el botón y se generará de inmediato."
+            )
+        if "is not unique" in msg_str:
+            return (
+                f"Error de estructura en el archivo Excel: {msg_str}\n\n"
+                "Una de las columnas tiene nombre duplicado en el archivo de entrada."
+            )
+        return msg_str
+
     def on_success(self, stats):
         self.procesar_btn.setEnabled(True)
         self.procesar_btn.setText("   Generar Dashboard de Vendedores   ")
 
+        if 'ruta_guardada' in stats and stats['ruta_guardada']:
+            self.ruta_salida = stats['ruta_guardada']
+
         v_brutas = stats.get('ventas_brutas', stats['total_ventas'])
-        t_nc = stats.get('total_nc', 0)
-        v_netas = stats['total_ventas']
+        v_nc = stats.get('total_nc', 0.0)
+        v_netas = stats.get('ventas_netas', stats['total_ventas'])
 
         breakdown_str = f"   • Ventas Brutas: ${v_brutas:,.0f}\n"
-        if t_nc != 0:
-            breakdown_str += f"   • Notas Crédito (restadas): -${abs(t_nc):,.0f}\n"
-        breakdown_str += f"   • Ventas Netas (Facturación): ${v_netas:,.0f}\n"
+        if v_nc != 0.0:
+            breakdown_str += f"   • Notas Crédito (-): -${abs(v_nc):,.0f}\n"
+        breakdown_str += f"   • Ventas Netas: ${v_netas:,.0f}\n"
 
-        dian_info_str = ""
         hojas_str = (
-            f"El archivo incluye las hojas estándar:\n"
+            f"Hojas generadas en el archivo:\n"
             f"   1. Resumen Ejecutivo (KPIs con Ventas Brutas/NC/Netas + Ranking)\n"
             f"   2. Clientes por Vendedor (Almacen, Factura, Coste, Utilidad)\n"
-            f"   3. Detalle Completo (todos los pedidos con Coste)\n"
-            f"   4. Por Almacen (distribucion)\n"
-            f"   5. Top Productos (Ventas, Coste, Utilidad, Margen)\n"
-            f"   6. Evolucion Semanal\n"
+            f"   3. Detalle Completo (Todos los pedidos con columnas completas)\n"
+            f"   4. Por Almacen (Distribucion por punto de venta)\n"
+            f"   5. Top Productos (Mas vendidos con margen)\n"
+            f"   6. Evolucion Semanal (Tendencia temporal Top 8)"
         )
-        if 'dian_stats' in stats and stats['dian_stats']:
-            ds = stats['dian_stats']
+
+        dian_info_str = ""
+        dian_stats = stats.get('dian_stats', None)
+        if dian_stats:
+            hojas_str += "\n   7. Conciliación DIAN vs Sistema (Auditoría cruzada Facturas y NC con motivos)"
+            iva_str = f" | IVA: ${dian_stats['facturas_iva']:,.0f}" if 'facturas_iva' in dian_stats else ""
+            nc_iva_str = f" | IVA: -${dian_stats['nc_iva']:,.0f}" if 'nc_iva' in dian_stats else ""
+            neto_iva_str = f" | IVA Neto: ${dian_stats['neto_iva_dian']:,.0f}" if 'neto_iva_dian' in dian_stats else ""
+            dif_iva_str = f" (IVA: ${dian_stats['dif_global_iva']:,.0f})" if 'dif_global_iva' in dian_stats else ""
             dian_info_str = (
-                f"\n🔍 Conciliación con DIAN:\n"
-                f"   • Facturas DIAN: {ds.get('facturas_count', 0)} (${ds.get('facturas_total', 0):,.0f})\n"
-                f"   • Notas Crédito DIAN: {ds.get('nc_count', 0)} (${ds.get('nc_total', 0):,.0f})\n"
-                f"   • Neto Oficial DIAN: ${ds.get('neto_dian', 0):,.0f}\n"
-                f"   • Facturas solo en DIAN (no en pedidos): {ds.get('solo_dian_count', 0)} (${ds.get('solo_dian_total', 0):,.0f})\n"
-                f"   • Facturas con diferencias de valor: {ds.get('diff_val_count', 0)}\n"
+                f"\n\nConciliación Oficial DIAN (con IVA):\n"
+                f"   • Facturas DIAN: {dian_stats['facturas_count']} (${dian_stats['facturas_total']:,.0f}{iva_str})\n"
+                f"   • Notas Crédito DIAN: {dian_stats['nc_count']} (-${dian_stats['nc_total']:,.0f}{nc_iva_str})\n"
+                f"   • Total Neto DIAN: ${dian_stats['neto_dian']:,.0f}{neto_iva_str}\n"
+                f"   • Facturas solo en DIAN (no en pedidos): {dian_stats['solo_dian_count']} (${dian_stats['solo_dian_total']:,.0f})\n"
+                f"   • Diferencia global explicada: ${dian_stats['dif_global']:,.0f}{dif_iva_str}"
             )
-            hojas_str += f"   7. Conciliación DIAN vs Sistema (Totales, comentarios explicativos y auditoría)\n"
+
+        aviso_ruta = ""
+        if 'ruta_guardada' in stats and stats['ruta_guardada'] != getattr(self, '_ruta_original_pedida', ''):
+            if os.path.basename(stats['ruta_guardada']) != "Dashboard_Vendedores.xlsx":
+                aviso_ruta = f"\n(Nota: Se guardó con número incremental porque el anterior estaba abierto en Excel)\n"
 
         msg = (
-            f"🎉 Dashboard generado con éxito!\n\n"
-            f"Métricas Financieras:\n"
+            f"🎉 Dashboard de Vendedores generado con éxito!\n\n"
+            f"Métricas del Dashboard:\n"
             f"{breakdown_str}"
             f"   • Coste total: ${stats['total_coste']:,.0f}\n"
             f"   • Utilidad: ${stats['total_utilidad']:,.0f}\n"
-            f"   • Margen real: {stats['margen_real']*100:.1f}%\n"
-            f"   • Vendedores analizados: {stats['total_vendedores']}\n"
-            f"   • Clientes totales: {stats['total_clientes']}\n"
+            f"   • Margen real global: {stats['margen_real'] * 100:.1f}%\n"
+            f"   • Vendedores activos: {stats['total_vendedores']}\n"
+            f"   • Clientes atendidos: {stats['total_clientes']}\n"
             f"   • Pedidos procesados: {stats['total_pedidos']}\n"
             f"   • Top vendedor: {stats['top_vendedor']}\n"
             f"{dian_info_str}\n"
             f"{hojas_str}\n"
+            f"{aviso_ruta}"
             f"Guardado en:\n{self.ruta_salida}"
         )
         self.result_text.setPlainText(msg)
@@ -393,10 +427,11 @@ class VendedoresWidget(QWidget):
     def on_error(self, err_msg):
         self.procesar_btn.setEnabled(True)
         self.procesar_btn.setText("   Generar Dashboard de Vendedores   ")
-        self.result_text.setPlainText(f"Error al procesar:\n\n{err_msg}")
+        err_traducido = self._traducir_error(err_msg)
+        self.result_text.setPlainText(f"Error al procesar:\n\n{err_traducido}")
         QMessageBox.critical(
-            self, "Error",
-            f"No se pudo generar el dashboard:\n\n{err_msg}"
+            self, "Archivo Bloqueado en Excel" if "ABIERTO" in err_traducido else "Error",
+            f"No se pudo generar el dashboard:\n\n{err_traducido}"
         )
 
     def cargar_archivo_dian(self):
@@ -470,6 +505,9 @@ class VendedoresWidget(QWidget):
         self.procesar_nc_btn.setEnabled(True)
         self.procesar_nc_btn.setText("   📄 Generar Reporte de Notas Crédito   ")
 
+        if 'ruta_guardada' in stats and stats['ruta_guardada']:
+            self.ruta_salida_nc = stats['ruta_guardada']
+
         msg = (
             f"🎉 Reporte de Notas Crédito generado con éxito!\n\n"
             f"Métricas del Reporte:\n"
@@ -496,10 +534,11 @@ class VendedoresWidget(QWidget):
     def on_error_nc(self, err_msg):
         self.procesar_nc_btn.setEnabled(True)
         self.procesar_nc_btn.setText("   📄 Generar Reporte de Notas Crédito   ")
-        self.result_text.setPlainText(f"Error al procesar notas crédito:\n\n{err_msg}")
+        err_traducido = self._traducir_error(err_msg)
+        self.result_text.setPlainText(f"Error al procesar notas crédito:\n\n{err_traducido}")
         QMessageBox.critical(
-            self, "Error",
-            f"No se pudo generar el reporte de notas crédito:\n\n{err_msg}"
+            self, "Archivo Bloqueado en Excel" if "ABIERTO" in err_traducido else "Error",
+            f"No se pudo generar el reporte de notas crédito:\n\n{err_traducido}"
         )
 
     def limpiar_todo(self):
