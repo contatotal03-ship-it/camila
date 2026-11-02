@@ -338,7 +338,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Conciliador Financiero v{auto_updater.get_local_version()}")
-        self.resize(960, 640)
+        self.setMinimumSize(1024, 680)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)

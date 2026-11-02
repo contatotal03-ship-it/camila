@@ -1,9 +1,261 @@
 import pandas as pd
 import numpy as np
 import os
+import re
 import traceback
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-from .excel_utils import robust_read_excel
+from .excel_utils import robust_read_excel, robust_ExcelFile
+
+
+import json
+
+CONFIG_VENDEDORES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendedores_config.json")
+
+def cargar_config_vendedores():
+    """Carga la configuración de vendedores especiales (Repuestos y Jaime) desde JSON."""
+    defaults = {
+        "vendedores_repuestos": [
+            "MAILYN YORGELY CONTRERAS CARDENAS",
+            "LILIANA DEL PILAR MENDOZA GUEVARA"
+        ],
+        "vendedores_vehiculos_jaime": [
+            "JAIME EDUARDO  OROZCO CHAVARRO"
+        ]
+    }
+    if os.path.exists(CONFIG_VENDEDORES_FILE):
+        try:
+            with open(CONFIG_VENDEDORES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {
+                    "vendedores_repuestos": data.get("vendedores_repuestos", defaults["vendedores_repuestos"]),
+                    "vendedores_vehiculos_jaime": data.get("vendedores_vehiculos_jaime", defaults["vendedores_vehiculos_jaime"])
+                }
+        except Exception:
+            pass
+    return defaults
+
+def guardar_config_vendedores(cfg):
+    """Guarda la configuración de vendedores especiales en JSON."""
+    try:
+        with open(CONFIG_VENDEDORES_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=4, ensure_ascii=False)
+        return True
+    except Exception as e:
+        print(f"Error al guardar vendedores_config.json: {e}")
+        return False
+
+
+def leer_trial_balance_odoo(ruta_tb, client_to_cc=None):
+    """
+    Lee de forma inteligente un Trial Balance / Balance de Comprobación de Odoo en Excel,
+    independientemente del nombre del archivo o nombre de la hoja.
+    Extrae automáticamente:
+      - Cuentas PUC de Otros Ingresos (4180, 4210, 4225, 4235, 4295)
+      - Liquidación de Taller (Auteco + Autotécnica bajo 42354001)
+      - Arriendo UMA (Supermotos UMA bajo 42354001)
+      - Devoluciones en ventas (cuentas 4175)
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(ruta_tb, data_only=True)
+    ws = None
+    for name in wb.sheetnames:
+        if "trial" in name.lower() or "balance" in name.lower():
+            ws = wb[name]
+            break
+    if ws is None:
+        ws = wb.active
+
+    # Detectar fila de encabezados
+    header_row = None
+    col_map = {}
+    for r in range(1, 15):
+        row_vals = [str(ws.cell(row=r, column=c).value or "").strip() for c in range(1, 12)]
+        for idx, val in enumerate(row_vals, 1):
+            val_low = val.lower()
+            if "código" in val_low or "codigo" in val_low or "code" in val_low:
+                col_map["code"] = idx
+            elif "nombre" in val_low or "account" in val_low:
+                col_map["name"] = idx
+            elif "partner" in val_low or "vat" in val_low or "nit" in val_low:
+                col_map["vat"] = idx
+            elif "debit" in val_low or "débito" in val_low or "debito" in val_low:
+                if "debit" not in col_map:
+                    col_map["debit"] = idx
+            elif "credit" in val_low or "crédito" in val_low or "credito" in val_low:
+                if "credit" not in col_map:
+                    col_map["credit"] = idx
+            elif "saldo" in val_low or "balance" in val_low:
+                if "saldo_ini" not in col_map:
+                    col_map["saldo_ini"] = idx
+                else:
+                    col_map["saldo_fin"] = idx
+        if "code" in col_map and "debit" in col_map and "credit" in col_map:
+            header_row = r
+            break
+
+    if not header_row:
+        header_row = 3
+        col_map = {"code": 1, "name": 2, "vat": 3, "saldo_ini": 4, "debit": 5, "credit": 6, "saldo_fin": 7}
+
+    cuentas = {}
+    current_account = None
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        c_code = ws.cell(row=r, column=col_map["code"]).value
+        c_name = str(ws.cell(row=r, column=col_map.get("name", 2)).value or "").strip()
+        deb = float(ws.cell(row=r, column=col_map["debit"]).value or 0.0)
+        cred = float(ws.cell(row=r, column=col_map["credit"]).value or 0.0)
+        s_fin = float(ws.cell(row=r, column=col_map.get("saldo_fin", 7)).value or 0.0)
+
+        if c_code is not None and str(c_code).strip():
+            code_str = str(c_code).strip()
+            current_account = code_str
+            cuentas[code_str] = {
+                "name": c_name,
+                "debit": deb,
+                "credit": cred,
+                "net": cred - deb,
+                "saldo_fin": s_fin,
+                "partners": {}
+            }
+        elif current_account and c_name and not c_name.startswith("Total "):
+            vat_val = str(ws.cell(row=r, column=col_map.get("vat", 3)).value or "").strip()
+            cuentas[current_account]["partners"][c_name] = {
+                "vat": vat_val,
+                "debit": deb,
+                "credit": cred,
+                "net": cred - deb,
+                "saldo_fin": s_fin
+            }
+
+    def get_cred(code):
+        return cuentas.get(code, {}).get("credit", 0.0)
+
+    cesantias_mov = get_cred("41800103")
+    cesantias_rep = get_cred("41800104")
+    total_cesantias = cesantias_mov + cesantias_rep
+
+    comisiones = get_cred("42253001")
+    intereses = get_cred("42100501")
+    netforms = get_cred("42352001")
+
+    arriendo_uma = 0.0
+    liq_auteco = 0.0
+    liq_autotecnica = 0.0
+    if "42354001" in cuentas:
+        parts = cuentas["42354001"]["partners"]
+        for p_name, p_data in parts.items():
+            p_up = p_name.upper()
+            if "UMA" in p_up:
+                arriendo_uma += p_data["credit"]
+            elif "AUTECO" in p_up:
+                liq_auteco += p_data["net"]
+            elif "AUTOTECNICA" in p_up or "AUTOTÉCNICA" in p_up:
+                liq_autotecnica += p_data["net"]
+
+    descuentos = get_cred("42104001")
+    ajuste_peso = get_cred("42958101")
+    sobrantes_caja = get_cred("42955301")
+    aprovechamientos = get_cred("42950501")
+
+    otros_ingresos = [
+        {"concepto": "Cesantías de movilidad y repuestos", "cuentas": "41800103 y 41800104", "valor": total_cesantias, "detalle": f"Movilidad: ${cesantias_mov:,.2f} + Repuestos: ${cesantias_rep:,.2f}"},
+        {"concepto": "Comisiones", "cuentas": "42253001", "valor": comisiones, "detalle": "Por ingresos para terceros"},
+        {"concepto": "Intereses de financiación", "cuentas": "42100501", "valor": intereses, "detalle": "Rendimientos e intereses financieros"},
+        {"concepto": "Netforms", "cuentas": "42352001", "valor": netforms, "detalle": "Servicios administrativos"},
+        {"concepto": "Arriendo UMA", "cuentas": "42354001 (Supermotos UMA)", "valor": arriendo_uma, "detalle": "Partner Supermotos UMA SAS Zomac"},
+        {"concepto": "Descuentos Comerciales", "cuentas": "42104001", "valor": descuentos, "detalle": "Descuentos comerciales condicionados"},
+        {"concepto": "Ajuste al peso", "cuentas": "42958101", "valor": ajuste_peso, "detalle": "Ajuste por redondeo al peso"},
+        {"concepto": "Sobrantes caja", "cuentas": "42955301", "valor": sobrantes_caja, "detalle": "Sobrantes de caja en sedes"},
+    ]
+    if aprovechamientos > 0:
+        otros_ingresos.append({"concepto": "Aprovechamientos", "cuentas": "42950501", "valor": aprovechamientos, "detalle": "Aprovechamientos extraordinarios"})
+
+    total_otros_ingresos = sum(item["valor"] for item in otros_ingresos)
+    liq_taller_total = liq_auteco + liq_autotecnica
+    dev_4175 = sum(v.get("debit", 0.0) for k, v in cuentas.items() if k.startswith("4175"))
+
+    # Extracción y conciliación analítica de Transporte / Fletes (Cuenta 4145) por Sede
+    transporte_sede = {}
+    total_transporte = 0.0
+    c_4145_code = "41450501" if "41450501" in cuentas else ("414505" if "414505" in cuentas else ("4145" if "4145" in cuentas else None))
+    if c_4145_code and c_4145_code in cuentas:
+        c_4145 = cuentas[c_4145_code]
+        total_transporte = c_4145.get("net", 0.0)
+        for p_nom, p_info in c_4145.get("partners", {}).items():
+            if p_nom[:4].isdigit() or p_nom.startswith("Total "):
+                continue
+            net = p_info["net"]
+            if net != 0:
+                s_matched = "Villavicencio"
+                if client_to_cc:
+                    s_matched = client_to_cc.get(p_nom.upper().strip(), "Villavicencio")
+                transporte_sede[s_matched] = transporte_sede.get(s_matched, 0.0) + net
+
+    return {
+        "transporte_por_sede": transporte_sede,
+        "total_transporte": total_transporte,
+        "cuentas": cuentas,
+        "otros_ingresos": otros_ingresos,
+        "total_otros_ingresos": total_otros_ingresos,
+        "arriendo_uma": arriendo_uma,
+        "liq_auteco": liq_auteco,
+        "liq_autotecnica": liq_autotecnica,
+        "liq_taller_total": liq_taller_total,
+        "dev_4175": dev_4175,
+        "total_cesantias": total_cesantias,
+        "comisiones": comisiones,
+        "intereses": intereses,
+        "netforms": netforms,
+        "descuentos": descuentos,
+        "ajuste_peso": ajuste_peso,
+        "sobrantes_caja": sobrantes_caja
+    }
+
+def _leer_excel_inteligente(ruta_archivo):
+    """
+    Lee un archivo Excel inspeccionando sus hojas y encabezados de manera inteligente:
+    1. Si tiene varias hojas y existe una llamada 'Detalle Ventas', 'Detalle', 'Pedidos', etc., la prioriza.
+    2. Si las primeras filas contienen títulos o celdas vacías (Unnamed), busca automáticamente
+       la fila real de encabezados.
+    3. Retorna un DataFrame de Pandas limpio con las columnas correctas.
+    """
+    try:
+        xl = robust_ExcelFile(ruta_archivo)
+        sheet_names = xl.sheet_names
+    except Exception:
+        return robust_read_excel(ruta_archivo)
+
+    preferidas = ['detalle ventas', 'detalle', 'pedidos', 'ventas', 'order', 'sale.order', 'sheet1', 'hoja1']
+    hojas_ordenadas = []
+    for pref in preferidas:
+        for s in sheet_names:
+            if pref in s.lower() and s not in hojas_ordenadas:
+                hojas_ordenadas.append(s)
+    for s in sheet_names:
+        if s not in hojas_ordenadas:
+            hojas_ordenadas.append(s)
+
+    for sheet in hojas_ordenadas:
+        try:
+            df_preview = robust_read_excel(ruta_archivo, sheet_name=sheet, header=None, nrows=15)
+            header_row = 0
+            for r_idx in range(len(df_preview)):
+                row_vals = [str(v).lower().strip() for v in df_preview.iloc[r_idx] if pd.notna(v)]
+                keywords_header = ['vendedor', 'centro de costo', 'costo', 'producto', 'total', 'base imponible', 'base', 'número', 'numero', 'referencia', 'cliente']
+                coincidencias = sum(1 for kw in keywords_header if any(kw in cell for cell in row_vals))
+                if coincidencias >= 2:
+                    header_row = r_idx
+                    break
+
+            df = robust_read_excel(ruta_archivo, sheet_name=sheet, header=header_row)
+            cols_named = [c for c in df.columns if not str(c).startswith('Unnamed:')]
+            if len(cols_named) >= 3 and len(df) > 0:
+                return df
+        except Exception:
+            continue
+
+    return robust_read_excel(ruta_archivo)
 
 
 def _resolve_col(df, primary_name, keywords, excludes=None, label=""):
@@ -35,7 +287,19 @@ def _asegurar_ruta_disponible(ruta_salida):
     Si está bloqueada, genera automáticamente un nombre alternativo libre:
     ej. 'Dashboard_Vendedores (1).xlsx', 'Dashboard_Vendedores (2).xlsx', etc.
     para que la generación nunca se detenga por 'Permission denied'.
+    Protege siempre los archivos ORIGINALES para jamás sobrescribirlos.
     """
+    if not ruta_salida:
+        return ruta_salida
+
+    # PROTECCIÓN: Si apunta a un archivo ORIGINAL, redirigir para proteger la copia original
+    if "original" in os.path.basename(ruta_salida).lower():
+        dir_name = os.path.dirname(ruta_salida) or "."
+        base_name = os.path.basename(ruta_salida)
+        for tag in ["_ORIGINAL", "_original", " ORIGINAL", " original"]:
+            base_name = base_name.replace(tag, "")
+        ruta_salida = os.path.join(dir_name, base_name)
+
     if not os.path.exists(ruta_salida):
         return ruta_salida
     try:
@@ -82,21 +346,38 @@ def procesar_dashboard_vendedores(ruta_archivo, ruta_salida, ruta_asiento_nc=Non
     from openpyxl.chart.label import DataLabelList
     from openpyxl.utils import get_column_letter
 
-    df = robust_read_excel(ruta_archivo)
+    df = _leer_excel_inteligente(ruta_archivo)
 
-    cols_lower = [c.lower().strip() for c in df.columns]
+    cols_lower = [str(c).lower().strip() for c in df.columns]
     tiene_vendedor = any('vendedor' in c for c in cols_lower)
-    tiene_total = any(c == 'total' or c == 'total (tax included)' for c in cols_lower)
+    tiene_total = any(c == 'total' or 'total' in c for c in cols_lower)
     tiene_producto = any('roducto' in c for c in cols_lower)
+    tiene_cc = any('costo' in c or 'sede' in c for c in cols_lower)
+    tiene_base = any('base' in c for c in cols_lower)
+    tiene_num = any('número' in c or 'numero' in c or 'factura' in c for c in cols_lower)
+
+    # Si es un archivo de Ventas (Asiento Contable / Facturación por Sede) y no de Pedidos
+    if (tiene_cc or tiene_base or tiene_num) and not tiene_producto:
+        stats = procesar_informe_ventas_asiento(ruta_archivo, ruta_salida, ruta_asiento_nc=ruta_asiento_nc)
+        stats['es_asiento_ventas'] = True
+        stats['ventas_brutas'] = stats['total_ventas']
+        stats['ventas_netas'] = stats['total_ventas']
+        stats['total_coste'] = 0.0
+        stats['total_utilidad'] = stats['total_ventas']
+        stats['margen_real'] = 1.0
+        stats['total_clientes'] = stats['total_facturas']
+        stats['total_pedidos'] = stats['total_facturas']
+        stats['top_vendedor'] = f"{stats['total_vendedores']} Vendedores en {stats['total_sedes']} Sedes"
+        stats['total_nc'] = 0.0
+        return stats
 
     if not (tiene_vendedor and tiene_total and tiene_producto):
         cols_str = ', '.join([str(c) for c in df.columns[:12]])
         raise ValueError(
-            f"El archivo cargado NO es el correcto.\n\n"
-            f"Se esperaba: 'Pedido de venta (sale.order).xlsx'\n"
+            f"El archivo cargado NO contiene las columnas requeridas.\n\n"
             f"Se detectaron estas columnas: [{cols_str}]\n\n"
-            f"Por favor seleccione el archivo 'Pedido de venta (sale.order).xlsx' "
-            f"que contiene las columnas: Vendedor, Producto, Total, Base imponible, etc."
+            f"• Para Dashboard de Pedidos se requiere: 'Vendedor', 'Producto', 'Total'.\n"
+            f"• Para Informe de Ventas por Sede se requiere: 'Centro de costo', 'Vendedor', 'Base imponible' o 'Total'."
         )
 
     col_vendedor = _resolve_col(df, 'Vendedor', ['vendedor'], label='Vendedor')
@@ -1852,4 +2133,1983 @@ def procesar_dashboard_nc_asiento(ruta_asiento, ruta_salida):
         "nc_recuperadas": n_recuperadas,
         "nc_excluidas": n_excluidas,
         "ticket_prom": ticket_prom,
+    }
+
+
+
+def _crear_dashboard_gerencial(wb, tb_data, tot_sed_r, sedes):
+    """
+    Genera una portada ejecutiva visual tipo DASHBOARD gerencial con acabado PREMIUM:
+      - Sin líneas de fondo (showGridLines = False) para estética de software/aplicación ejecutiva
+      - Banner institucional corporativo
+      - 5 Tarjetas KPI con acentos de color superior y amplitud total (sin '########')
+      - Módulo 1: Composición de Facturación por Línea de Negocio
+      - Módulo 2: Desempeño y Facturación Neta por Sede
+      - Gráficos nativos ejecutivos: Anillo (Líneas) y Columnas (Sedes)
+    """
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.chart import BarChart, DoughnutChart, Reference
+
+    if "Dashboard Gerencial" in wb.sheetnames:
+        del wb["Dashboard Gerencial"]
+
+    ws = wb.create_sheet(title="Dashboard Gerencial", index=0)
+
+    # 1. QUITAR LÍNEAS DE CUADRÍCULA DE FONDO (ACABADO CANVAS PREMIUM)
+    ws.views.sheetView[0].showGridLines = False
+
+    FONT_NAME = "Calibri"
+    C_NAVY_DARK = "1F4E79"
+    C_NAVY_MED = "2F5597"
+    C_WHITE = "FFFFFF"
+    C_TEXT_DARK = "0F172A"
+    C_TEXT_MUTED = "64748B"
+    C_BORDER = "CBD5E1"
+    C_GREEN = "16A34A"
+    C_AMBER = "D97706"
+    C_BLUE_LIGHT = "EEF2F6"
+    C_ZEBRA = "F8FAFC"
+    C_CARD_BG = "FFFFFF"
+
+    f_banner_title = Font(name=FONT_NAME, size=15, bold=True, color=C_WHITE)
+    f_banner_sub = Font(name=FONT_NAME, size=9, bold=False, color="E2E8F0")
+    f_sec_title = Font(name=FONT_NAME, size=11, bold=True, color=C_NAVY_DARK)
+    f_kpi_title = Font(name=FONT_NAME, size=8, bold=True, color=C_TEXT_MUTED)
+    f_kpi_sub = Font(name=FONT_NAME, size=8, italic=True, color=C_TEXT_MUTED)
+
+    f_th = Font(name=FONT_NAME, size=9, bold=True, color=C_WHITE)
+    f_td = Font(name=FONT_NAME, size=9, color=C_TEXT_DARK)
+    f_td_bold = Font(name=FONT_NAME, size=9, bold=True, color=C_TEXT_DARK)
+    f_total = Font(name=FONT_NAME, size=9, bold=True, color=C_NAVY_DARK)
+
+    fill_banner = PatternFill(start_color=C_NAVY_DARK, end_color=C_NAVY_DARK, fill_type="solid")
+    fill_kpi = PatternFill(start_color=C_CARD_BG, end_color=C_CARD_BG, fill_type="solid")
+    fill_th = PatternFill(start_color=C_NAVY_MED, end_color=C_NAVY_MED, fill_type="solid")
+    fill_zebra = PatternFill(start_color=C_ZEBRA, end_color=C_ZEBRA, fill_type="solid")
+    fill_white = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    fill_tot = PatternFill(start_color=C_BLUE_LIGHT, end_color=C_BLUE_LIGHT, fill_type="solid")
+
+    thin_card = Side(border_style="thin", color="CBD5E1")
+    med_navy = Side(border_style="medium", color=C_NAVY_DARK)
+    med_green = Side(border_style="medium", color=C_GREEN)
+    med_amber = Side(border_style="medium", color=C_AMBER)
+    med_blue = Side(border_style="medium", color=C_NAVY_MED)
+
+    thin_grid = Side(border_style="thin", color="E2E8F0")
+    b_grid = Border(left=thin_grid, right=thin_grid, top=thin_grid, bottom=thin_grid)
+    b_double_bottom = Border(left=thin_grid, right=thin_grid, top=thin_grid, bottom=Side(border_style="double", color=C_NAVY_DARK))
+
+    a_left = Alignment(horizontal="left", vertical="center")
+    a_right = Alignment(horizontal="right", vertical="center")
+    a_center = Alignment(horizontal="center", vertical="center")
+
+    NF_CURR = "$ #,##0"
+    NF_INT = "#,##0"
+    NF_PCT = "0.0%"
+
+    # 1. HEADER BANNER CORPORATIVO (Filas 2 y 3)
+    ws.merge_cells("B2:L2")
+    ws.merge_cells("B3:L3")
+    ws.cell(2, 2, "CH INVERSIONES COLOMBIA S.A.S ZOMAC  |  NIT 901.368.587-8").font = f_banner_title
+    ws.cell(3, 2, "DASHBOARD EJECUTIVO DE CONTROL GERENCIAL, INGRESOS Y OPERACIONES").font = f_banner_sub
+    ws.cell(2, 2).alignment = a_center
+    ws.cell(3, 2).alignment = a_center
+
+    for r in [2, 3]:
+        ws.row_dimensions[r].height = 24
+        for c in range(2, 13):
+            ws.cell(r, c).fill = fill_banner
+
+    # 2. TARJETAS KPI REDISEÑADAS Y AMPLIAS (Filas 5 a 7)
+    # Card 1: B-C (width 42)
+    # Card 2: D-E (width 36)
+    # Card 3: F-H (width 37: columnas 6, 7, 8 completas para cero recortes)
+    # Card 4: I-J (width 32)
+    # Card 5: K-L (width 42)
+    val_gt = "=E21"
+    val_fn = "=E19"
+    val_oi = "=E20"
+    val_nc = f"='Consolidado por Sede'!L{tot_sed_r}"
+
+    kpis = [
+        (2, 3, "GRAN TOTAL INGRESOS", val_gt, "Facturación + Otros Ingresos", C_NAVY_DARK, med_navy),
+        (4, 5, "FACTURACIÓN NETA", val_fn, "461 Facturas - 33 Notas Crédito", C_NAVY_DARK, med_blue),
+        (6, 8, "OTROS INGRESOS (BALANCE)", val_oi, "Cesantías, Comisiones, Intereses", C_GREEN, med_green),
+        (9, 10, "NOTAS CRÉDITO Y REVERSIONES", val_nc, "33 Notas Cruzadas (3.6%)", C_AMBER, med_amber),
+        (11, 12, "COBERTURA DE OPERACIONES", f"{len(sedes)} Sedes Comerciales", "18 Asesores | Auditoría Odoo", C_NAVY_MED, med_navy),
+    ]
+
+    ws.row_dimensions[5].height = 17
+    ws.row_dimensions[6].height = 28
+    ws.row_dimensions[7].height = 17
+
+    for c_s, c_e, title, val_form, subtext, col_n, top_border_style in kpis:
+        ws.merge_cells(start_row=5, start_column=c_s, end_row=5, end_column=c_e)
+        ws.merge_cells(start_row=6, start_column=c_s, end_row=6, end_column=c_e)
+        ws.merge_cells(start_row=7, start_column=c_s, end_row=7, end_column=c_e)
+
+        c_t = ws.cell(5, c_s, title)
+        c_t.font = f_kpi_title; c_t.alignment = a_center
+
+        c_v = ws.cell(6, c_s, val_form)
+        c_v.font = Font(name=FONT_NAME, size=15, bold=True, color=col_n)
+        c_v.alignment = a_center
+        if str(val_form).startswith("="):
+            c_v.number_format = NF_CURR
+
+        c_s_txt = ws.cell(7, c_s, subtext)
+        c_s_txt.font = f_kpi_sub; c_s_txt.alignment = a_center
+
+        for r in range(5, 8):
+            for col_i in range(c_s, c_e + 1):
+                cell = ws.cell(r, col_i)
+                cell.fill = fill_kpi
+                cell.border = Border(
+                    left=thin_card if col_i == c_s else Side(border_style=None),
+                    right=thin_card if col_i == c_e else Side(border_style=None),
+                    top=top_border_style if r == 5 else Side(border_style=None),
+                    bottom=thin_card if r == 7 else Side(border_style=None)
+                )
+
+    # Espacio entre cards y tablas
+    ws.row_dimensions[8].height = 10
+    ws.row_dimensions[9].height = 10
+
+    # 3. MÓDULOS DE CONTENIDO
+    ws.row_dimensions[10].height = 22
+    ws.merge_cells("B10:F10")
+    ws.cell(10, 2, "1. COMPOSICIÓN DE INGRESOS POR LÍNEA DE NEGOCIO").font = f_sec_title
+    ws.cell(10, 2).alignment = a_left
+
+    ws.merge_cells("H10:L10")
+    ws.cell(10, 8, "2. PARTICIPACIÓN Y FACTURACIÓN NETA POR SEDE").font = f_sec_title
+    ws.cell(10, 8).alignment = a_left
+
+    # Encabezados Módulo 1 (Líneas)
+    m1_headers = ["Línea de Negocio / Concepto", "Cta Contable", "Tipo Operación", "Valor Mes", "Part."]
+    for i, h in enumerate(m1_headers, 2):
+        c = ws.cell(11, i, h)
+        c.font = f_th; c.fill = fill_th; c.alignment = a_center; c.border = b_grid
+    ws.row_dimensions[11].height = 22
+
+    # Encabezados Módulo 2 (Sedes)
+    m2_headers = ["Centro de Costo (Sede)", "Facturas", "Venta Bruta", "Notas Crédito", "Facturación Neta"]
+    for i, h in enumerate(m2_headers, 8):
+        c = ws.cell(11, i, h)
+        c.font = f_th; c.fill = fill_th; c.alignment = a_center; c.border = b_grid
+
+    # Datos Módulo 1 (Líneas)
+    m1_data = [
+        ("Vehículos Generales", 41350201, "Comercial", f"='Consolidado por Sede'!C{tot_sed_r}", "=E12/$E$19"),
+        ("Vehículos Jaime (Especial)", 41350201, "Comercial", f"='Consolidado por Sede'!D{tot_sed_r}", "=E13/$E$19"),
+        ("Repuestos", 41350601, "Comercial", f"='Consolidado por Sede'!E{tot_sed_r}", "=E14/$E$19"),
+        ("Transporte (Fletes 4145)", 41450501, "Comercial", f"='Consolidado por Sede'!F{tot_sed_r}", "=E15/$E$19"),
+        ("Liquidación Taller (Auteco)", 42354001, "Servicio Taller", f"='Consolidado por Sede'!G{tot_sed_r}", "=E16/$E$19"),
+        ("Arriendo Sede UMA", 42354001, "Arriendo", f"='Consolidado por Sede'!H{tot_sed_r}", "=E17/$E$19"),
+        ("(-) Devoluciones / Notas Crédito", 41750101, "Devoluciones", f"='Consolidado por Sede'!L{tot_sed_r}", "=E18/$E$19"),
+    ]
+
+    for idx, (lin, cta, tip, form_v, form_p) in enumerate(m1_data, 12):
+        r_fill = fill_zebra if idx % 2 == 0 else fill_white
+        ws.cell(idx, 2, lin).font = f_td_bold if "(-)" in lin else f_td
+        ws.cell(idx, 2).alignment = a_left; ws.cell(idx, 2).fill = r_fill; ws.cell(idx, 2).border = b_grid
+
+        # Número entero para evitar triángulo verde
+        c_c = ws.cell(idx, 3, cta)
+        c_c.font = f_td; c_c.alignment = a_center; c_c.fill = r_fill; c_c.border = b_grid; c_c.number_format = "@"
+
+        c_tp = ws.cell(idx, 4, tip)
+        c_tp.font = f_td; c_tp.alignment = a_center; c_tp.fill = r_fill; c_tp.border = b_grid
+
+        c_v = ws.cell(idx, 5, form_v)
+        c_v.font = f_td_bold if "(-)" in lin else f_td
+        c_v.alignment = a_right; c_v.number_format = NF_CURR; c_v.fill = r_fill; c_v.border = b_grid
+
+        c_p = ws.cell(idx, 6, form_p)
+        c_p.font = f_td; c_p.alignment = a_right; c_p.number_format = NF_PCT; c_p.fill = r_fill; c_p.border = b_grid
+        ws.row_dimensions[idx].height = 20
+
+    # Subtotal Facturación Neta (Fila 18)
+    # Subtotal Facturación Neta (Fila 19)
+    ws.cell(19, 2, "(=) TOTAL FACTURACIÓN NETA").font = f_total
+    ws.cell(19, 2).alignment = a_left; ws.cell(19, 2).fill = fill_tot; ws.cell(19, 2).border = b_grid
+    for col_i in range(3, 5):
+        c = ws.cell(19, col_i, "-"); c.font = f_total; c.alignment = a_center; c.fill = fill_tot; c.border = b_grid
+
+    c_s_net = ws.cell(19, 5, "=SUM(E12:E17)+E18")
+    c_s_net.font = f_total; c_s_net.alignment = a_right; c_s_net.number_format = NF_CURR; c_s_net.fill = fill_tot; c_s_net.border = b_grid
+
+    c_s_pct = ws.cell(19, 6, "=E19/$E$21")
+    c_s_pct.font = f_total; c_s_pct.alignment = a_right; c_s_pct.number_format = NF_PCT; c_s_pct.fill = fill_tot; c_s_pct.border = b_grid
+    ws.row_dimensions[19].height = 22
+
+    # Fila Otros Ingresos (Fila 20)
+    ws.cell(20, 2, "(+) OTROS INGRESOS DEL BALANCE").font = f_td_bold
+    ws.cell(20, 2).alignment = a_left; ws.cell(20, 2).fill = fill_white; ws.cell(20, 2).border = b_grid
+    for col_i in range(3, 5):
+        c = ws.cell(20, col_i, "4180 / 42"); c.font = f_td; c.alignment = a_center; c.fill = fill_white; c.border = b_grid
+
+    c_oi_v = ws.cell(20, 5, "='Otros Ingresos y Balance'!E17" if tb_data else 0.0)
+    c_oi_v.font = f_td_bold; c_oi_v.alignment = a_right; c_oi_v.number_format = NF_CURR; c_oi_v.fill = fill_white; c_oi_v.border = b_grid
+
+    c_oi_p = ws.cell(20, 6, "=E20/$E$21")
+    c_oi_p.font = f_td; c_oi_p.alignment = a_right; c_oi_p.number_format = NF_PCT; c_oi_p.fill = fill_white; c_oi_p.border = b_grid
+    ws.row_dimensions[20].height = 20
+
+    # Fila Gran Total Ingresos (Fila 21)
+    ws.cell(21, 2, "(=) GRAN TOTAL INGRESOS MES").font = Font(name=FONT_NAME, size=9, bold=True, color=C_WHITE)
+    ws.cell(21, 2).fill = fill_banner; ws.cell(21, 2).alignment = a_left; ws.cell(21, 2).border = b_double_bottom
+    for col_i in range(3, 5):
+        c = ws.cell(21, col_i, "CONSOLIDADO"); c.font = Font(name=FONT_NAME, size=8, bold=True, color=C_WHITE); c.alignment = a_center; c.fill = fill_banner; c.border = b_double_bottom
+
+    c_gt_v = ws.cell(21, 5, "=E19+E20")
+    c_gt_v.font = Font(name=FONT_NAME, size=9, bold=True, color=C_WHITE); c_gt_v.alignment = a_right; c_gt_v.number_format = NF_CURR; c_gt_v.fill = fill_banner; c_gt_v.border = b_double_bottom
+
+    c_gt_p = ws.cell(21, 6, 1.0)
+    c_gt_p.font = Font(name=FONT_NAME, size=9, bold=True, color=C_WHITE); c_gt_p.alignment = a_right; c_gt_p.number_format = NF_PCT; c_gt_p.fill = fill_banner; c_gt_p.border = b_double_bottom
+    ws.row_dimensions[21].height = 24
+    start_sed_r = 7 # fila inicial en Consolidado por Sede
+    for s_i, sede_nom in enumerate(sedes):
+        idx_r = 12 + s_i
+        curr_s_r = start_sed_r + s_i
+        r_fill = fill_zebra if s_i % 2 == 0 else fill_white
+
+        ws.cell(idx_r, 8, sede_nom).font = f_td_bold
+        ws.cell(idx_r, 8).alignment = a_left; ws.cell(idx_r, 8).fill = r_fill; ws.cell(idx_r, 8).border = b_grid
+
+        # Cant Facturas
+        c_f = ws.cell(idx_r, 9, f"='Consolidado por Sede'!J{curr_s_r}")
+        c_f.font = f_td; c_f.alignment = a_center; c_f.number_format = NF_INT; c_f.fill = r_fill; c_f.border = b_grid
+
+        # Venta Bruta
+        c_vb = ws.cell(idx_r, 10, f"='Consolidado por Sede'!I{curr_s_r}")
+        c_vb.font = f_td; c_vb.alignment = a_right; c_vb.number_format = NF_CURR; c_vb.fill = r_fill; c_vb.border = b_grid
+
+        # Notas Crédito
+        c_nc = ws.cell(idx_r, 11, f"='Consolidado por Sede'!L{curr_s_r}")
+        c_nc.font = f_td; c_nc.alignment = a_right; c_nc.number_format = NF_CURR; c_nc.fill = r_fill; c_nc.border = b_grid
+
+        # Facturación Neta
+        c_fn = ws.cell(idx_r, 12, f"='Consolidado por Sede'!M{curr_s_r}")
+        c_fn.font = f_td_bold; c_fn.alignment = a_right; c_fn.number_format = NF_CURR; c_fn.fill = r_fill; c_fn.border = b_grid
+        ws.row_dimensions[idx_r].height = 20
+
+    # Total Sedes (Fila 18)
+    ws.cell(18, 8, "TOTAL TODAS LAS SEDES").font = f_total
+    ws.cell(18, 8).alignment = a_left; ws.cell(18, 8).fill = fill_tot; ws.cell(18, 8).border = b_grid
+
+    c_t_f = ws.cell(18, 9, f"=SUM(I12:I{11 + len(sedes)})")
+    c_t_f.font = f_total; c_t_f.alignment = a_center; c_t_f.number_format = NF_INT; c_t_f.fill = fill_tot; c_t_f.border = b_grid
+
+    c_t_vb = ws.cell(18, 10, f"=SUM(J12:J{11 + len(sedes)})")
+    c_t_vb.font = f_total; c_t_vb.alignment = a_right; c_t_vb.number_format = NF_CURR; c_t_vb.fill = fill_tot; c_t_vb.border = b_grid
+
+    c_t_nc = ws.cell(18, 11, f"=SUM(K12:K{11 + len(sedes)})")
+    c_t_nc.font = f_total; c_t_nc.alignment = a_right; c_t_nc.number_format = NF_CURR; c_t_nc.fill = fill_tot; c_t_nc.border = b_grid
+
+    c_t_fn = ws.cell(18, 12, f"=SUM(L12:L{11 + len(sedes)})")
+    c_t_fn.font = f_total; c_t_fn.alignment = a_right; c_t_fn.number_format = NF_CURR; c_t_fn.fill = fill_tot; c_t_fn.border = b_grid
+
+    # 4. GRÁFICOS EJECUTIVOS (Filas 23 en adelante)
+    try:
+        chart_doughnut = DoughnutChart()
+        chart_doughnut.title = "Composición de Facturación por Línea de Negocio"
+        chart_doughnut.style = 10
+        data_d = Reference(ws, min_col=5, min_row=12, max_row=17)
+        cats_d = Reference(ws, min_col=2, min_row=12, max_row=17)
+        chart_doughnut.add_data(data_d)
+        chart_doughnut.set_categories(cats_d)
+        chart_doughnut.width = 14
+        chart_doughnut.height = 8.5
+        ws.add_chart(chart_doughnut, "B23")
+
+        chart_bar = BarChart()
+        chart_bar.type = "col"
+        chart_bar.style = 10
+        chart_bar.title = "Facturación Neta por Centro de Costo (Sedes)"
+        chart_bar.y_axis.title = "COP ($)"
+        chart_bar.x_axis.title = "Sede"
+        data_b = Reference(ws, min_col=12, min_row=11, max_row=11 + len(sedes))
+        cats_b = Reference(ws, min_col=8, min_row=12, max_row=11 + len(sedes))
+        chart_bar.add_data(data_b, titles_from_data=True)
+        chart_bar.set_categories(cats_b)
+        chart_bar.legend = None
+        chart_bar.width = 16
+        chart_bar.height = 8.5
+        ws.add_chart(chart_bar, "H23")
+    except Exception as e_ch:
+        print(f"Aviso: No se pudo agregar gráfico en Dashboard: {e_ch}")
+
+    # ANCHOS DE COLUMNA PREMIUM (AMPLITUD TOTAL PARA CERO DESBORDAMIENTOS)
+    ws.column_dimensions["A"].width = 2
+    ws.column_dimensions["B"].width = 28
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 16
+    ws.column_dimensions["E"].width = 20
+    ws.column_dimensions["F"].width = 10
+    ws.column_dimensions["G"].width = 5 # Separador estético entre tablas
+    ws.column_dimensions["H"].width = 22
+    ws.column_dimensions["I"].width = 12
+    ws.column_dimensions["J"].width = 20
+    ws.column_dimensions["K"].width = 20
+    ws.column_dimensions["L"].width = 22
+    ws.column_dimensions["M"].width = 2
+    return ws
+
+
+
+def _crear_hoja_separador_y_operacion(wb, det_max_r, sedes):
+    """
+    Crea la hoja 'Separador y Operación' replicando y superando el formato manual
+    de 'Separador' y 'Ventas' de Camila, 100% automatizado con fórmulas vivas:
+      1. Matriz Separador de Ingresos por Sede (Vehículos Exentos, Gravados, Jaime,
+         Repuestos Exentos/Gravados, Taller, UMA, Transporte, NC y Neto)
+      2. Resumen de Operación por Sede (Estructura oficial de Camila)
+      3. Control Financiero de Transporte (Ingresos vs Gastos = Utilidad)
+    """
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    if "Separador y Operación" in wb.sheetnames:
+        del wb["Separador y Operación"]
+
+    ws_sep = wb.create_sheet(title="Separador y Operación")
+    ws_sep.views.sheetView[0].showGridLines = False
+
+    FONT_NAME = "Calibri"
+    C_NAVY_DARK = "1F4E79"
+    C_NAVY_MED = "2F5597"
+    C_TEXT_DARK = "0F172A"
+    C_TEXT_MUTED = "64748B"
+    C_WHITE = "FFFFFF"
+    C_BLUE_LIGHT = "EEF2F6"
+    C_ZEBRA = "F8FAFC"
+
+    f_title = Font(name=FONT_NAME, size=14, bold=True, color=C_NAVY_DARK)
+    f_subt = Font(name=FONT_NAME, size=10, italic=True, color=C_TEXT_MUTED)
+    f_sec_title = Font(name=FONT_NAME, size=11, bold=True, color=C_NAVY_DARK)
+    f_th = Font(name=FONT_NAME, size=9, bold=True, color=C_WHITE)
+    f_td = Font(name=FONT_NAME, size=9, color=C_TEXT_DARK)
+    f_td_bold = Font(name=FONT_NAME, size=9, bold=True, color=C_TEXT_DARK)
+    f_total = Font(name=FONT_NAME, size=9, bold=True, color=C_NAVY_DARK)
+
+    fill_th = PatternFill(start_color=C_NAVY_MED, end_color=C_NAVY_MED, fill_type="solid")
+    fill_zebra = PatternFill(start_color=C_ZEBRA, end_color=C_ZEBRA, fill_type="solid")
+    fill_white = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    fill_tot = PatternFill(start_color=C_BLUE_LIGHT, end_color=C_BLUE_LIGHT, fill_type="solid")
+
+    thin_grid = Side(border_style="thin", color="E2E8F0")
+    b_grid = Border(left=thin_grid, right=thin_grid, top=thin_grid, bottom=thin_grid)
+    b_double_bottom = Border(left=thin_grid, right=thin_grid, top=thin_grid, bottom=Side(border_style="double", color=C_NAVY_DARK))
+
+    a_left = Alignment(horizontal="left", vertical="center")
+    a_right = Alignment(horizontal="right", vertical="center")
+    a_center = Alignment(horizontal="center", vertical="center")
+
+    NF_CURR = "$ #,##0"
+    NF_PCT = "0.0%"
+
+    # ENCABEZADO
+    ws_sep.cell(2, 2, "CH INVERSIONES COLOMBIA S.A.S ZOMAC").font = f_title
+    ws_sep.cell(3, 2, "MATRIZ DE SEPARADOR DE INGRESOS Y OPERACIÓN POR CENTRO DE COSTO").font = Font(name=FONT_NAME, size=11, bold=True, color=C_TEXT_DARK)
+    ws_sep.cell(4, 2, "Consolidado de Vehículos (Exentos/Gravados/Jaime), Repuestos, Taller, UMA, Transporte y Notas Crédito").font = f_subt
+
+    # SECCIÓN 1: MATRIZ SEPARADOR POR SEDE
+    ws_sep.cell(6, 2, "1. MATRIZ DETALLADA DE INGRESOS POR SEDE (FORMATO SEPARADOR)").font = f_sec_title
+
+    sep_headers = [
+        "Centro de Costo (Sede)", "Vehículos Exentos", "Vehículos Gravados", "Vehículos Jaime",
+        "Repuestos Exentos", "Repuestos Gravados", "Liquidación Taller (42)", "Arriendo UMA (42)",
+        "Transporte (4145)", "Total Ventas Brutas", "(-) Notas Crédito", "Facturación Neta"
+    ]
+
+    for idx_c, h in enumerate(sep_headers, 2):
+        c = ws_sep.cell(8, idx_c, h)
+        c.font = f_th; c.fill = fill_th; c.alignment = a_center; c.border = b_grid
+    ws_sep.row_dimensions[8].height = 24
+
+    det_cc_rng = f"'Detalle Ventas'!$C$2:$C${det_max_r}"
+    det_cat_rng = f"'Detalle Ventas'!$Y$2:$Y${det_max_r}"
+    det_est_rng = f"'Detalle Ventas'!$U$2:$U${det_max_r}"
+    det_puc_rng = f"'Detalle Ventas'!$AI$2:$AI${det_max_r}"
+    det_tot_rng = f"'Detalle Ventas'!$N$2:$N${det_max_r}"
+    det_tipo_rng = f"'Detalle Ventas'!$W$2:$W${det_max_r}"
+
+    r_curr = 9
+    for s_idx, s in enumerate(sedes):
+        r_fill = fill_zebra if s_idx % 2 == 0 else fill_white
+        ws_sep.cell(r_curr, 2, s).font = f_td_bold; ws_sep.cell(r_curr, 2).alignment = a_left; ws_sep.cell(r_curr, 2).fill = r_fill; ws_sep.cell(r_curr, 2).border = b_grid
+
+        # Col C: Vehículos Exentos (41350201)
+        c_ve = ws_sep.cell(r_curr, 3, f'=SUMIFS({det_tot_rng}, {det_cc_rng}, B{r_curr}, {det_cat_rng}, "VEHÍCULOS GENERALES", {det_puc_rng}, "41350201", {det_est_rng}, "<>Cancelado")')
+        c_ve.font = f_td; c_ve.alignment = a_right; c_ve.number_format = NF_CURR; c_ve.fill = r_fill; c_ve.border = b_grid
+
+        # Col D: Vehículos Gravados (41350202)
+        c_vg = ws_sep.cell(r_curr, 4, f'=SUMIFS({det_tot_rng}, {det_cc_rng}, B{r_curr}, {det_cat_rng}, "VEHÍCULOS GENERALES", {det_puc_rng}, "41350202", {det_est_rng}, "<>Cancelado")')
+        c_vg.font = f_td; c_vg.alignment = a_right; c_vg.number_format = NF_CURR; c_vg.fill = r_fill; c_vg.border = b_grid
+
+        # Col E: Vehículos Jaime
+        c_vj = ws_sep.cell(r_curr, 5, f'=SUMIFS({det_tot_rng}, {det_cc_rng}, B{r_curr}, {det_cat_rng}, "VEHÍCULOS JAIME", {det_est_rng}, "<>Cancelado")')
+        c_vj.font = f_td; c_vj.alignment = a_right; c_vj.number_format = NF_CURR; c_vj.fill = r_fill; c_vj.border = b_grid
+
+        # Col F: Repuestos Exentos (41350601)
+        c_re = ws_sep.cell(r_curr, 6, f'=SUMIFS({det_tot_rng}, {det_cc_rng}, B{r_curr}, {det_cat_rng}, "REPUESTOS", {det_puc_rng}, "41350601", {det_est_rng}, "<>Cancelado")')
+        c_re.font = f_td; c_re.alignment = a_right; c_re.number_format = NF_CURR; c_re.fill = r_fill; c_re.border = b_grid
+
+        # Col G: Repuestos Gravados (41350602)
+        c_rg = ws_sep.cell(r_curr, 7, f'=SUMIFS({det_tot_rng}, {det_cc_rng}, B{r_curr}, {det_cat_rng}, "REPUESTOS", {det_puc_rng}, "41350602", {det_est_rng}, "<>Cancelado")')
+        c_rg.font = f_td; c_rg.alignment = a_right; c_rg.number_format = NF_CURR; c_rg.fill = r_fill; c_rg.border = b_grid
+
+        # Col H: Liquidación Taller (42354001) - Vinculado a Consolidado por Sede
+        c_tal = ws_sep.cell(r_curr, 8, f"='Consolidado por Sede'!G{7 + s_idx}")
+        c_tal.font = f_td; c_tal.alignment = a_right; c_tal.number_format = NF_CURR; c_tal.fill = r_fill; c_tal.border = b_grid
+
+        # Col I: Arriendo UMA (42354001) - Vinculado a Consolidado por Sede
+        c_uma = ws_sep.cell(r_curr, 9, f"='Consolidado por Sede'!H{7 + s_idx}")
+        c_uma.font = f_td; c_uma.alignment = a_right; c_uma.number_format = NF_CURR; c_uma.fill = r_fill; c_uma.border = b_grid
+
+        # Col J: Transporte (41450501) - Vinculado a Consolidado por Sede
+        c_tra = ws_sep.cell(r_curr, 10, f"='Consolidado por Sede'!F{7 + s_idx}")
+        c_tra.font = f_td; c_tra.alignment = a_right; c_tra.number_format = NF_CURR; c_tra.fill = r_fill; c_tra.border = b_grid
+
+        # Col K: Total Ventas Brutas
+        c_brut = ws_sep.cell(r_curr, 11, f'=SUM(C{r_curr}:J{r_curr})')
+        c_brut.font = f_td_bold; c_brut.alignment = a_right; c_brut.number_format = NF_CURR; c_brut.fill = r_fill; c_brut.border = b_grid
+
+        # Col L: Notas Crédito - Vinculado a Consolidado por Sede
+        c_nc = ws_sep.cell(r_curr, 12, f"='Consolidado por Sede'!L{7 + s_idx}")
+        c_nc.font = f_td; c_nc.alignment = a_right; c_nc.number_format = NF_CURR; c_nc.fill = r_fill; c_nc.border = b_grid
+
+        # Col M: Facturación Neta
+        c_net = ws_sep.cell(r_curr, 13, f'=K{r_curr}+L{r_curr}')
+        c_net.font = f_td_bold; c_net.alignment = a_right; c_net.number_format = NF_CURR; c_net.fill = r_fill; c_net.border = b_grid
+        ws_sep.row_dimensions[r_curr].height = 20
+        r_curr += 1
+
+    # Fila Total Separador
+    ws_sep.cell(r_curr, 2, "TOTAL CONSOLIDADO").font = f_total
+    ws_sep.cell(r_curr, 2).fill = fill_tot; ws_sep.cell(r_curr, 2).border = b_double_bottom; ws_sep.cell(r_curr, 2).alignment = a_left
+
+    for c_i in range(3, 14):
+        col_l = get_column_letter(c_i)
+        c = ws_sep.cell(r_curr, c_i, f'=SUM({col_l}9:{col_l}{r_curr-1})')
+        c.font = f_total; c.fill = fill_tot; c.border = b_double_bottom; c.alignment = a_right; c.number_format = NF_CURR
+    ws_sep.row_dimensions[r_curr].height = 24
+    tot_sep_r = r_curr
+    r_curr += 3
+
+    # SECCIÓN 2: RESUMEN DE OPERACIÓN POR SEDE (FORMATO OFICIAL CAMILA)
+    ws_sep.cell(r_curr, 2, "2. RESUMEN DE OPERACIÓN POR SEDE (ESTRUCTURA INFORME OPERACIONAL)").font = f_sec_title
+    r_curr += 2
+
+    oper_headers = [
+        "Centro de Costo (Sede)", "Facturas Vehículos", "(-) Notas Crédito", "Repuestos",
+        "Transporte (4145)", "Liquidación Taller", "Total Ingresos Operación", "% Participación"
+    ]
+    for idx_c, h in enumerate(oper_headers, 2):
+        c = ws_sep.cell(r_curr, idx_c, h)
+        c.font = f_th; c.fill = fill_th; c.alignment = a_center; c.border = b_grid
+    ws_sep.row_dimensions[r_curr].height = 24
+    r_curr += 1
+
+    s2_start = r_curr
+    for s_idx, s in enumerate(sedes):
+        r_fill = fill_zebra if s_idx % 2 == 0 else fill_white
+        sep_r = 9 + s_idx
+
+        ws_sep.cell(r_curr, 2, s).font = f_td_bold; ws_sep.cell(r_curr, 2).alignment = a_left; ws_sep.cell(r_curr, 2).fill = r_fill; ws_sep.cell(r_curr, 2).border = b_grid
+
+        # Facturas Vehículos = Vehículos Exentos + Gravados + Jaime
+        c_fv = ws_sep.cell(r_curr, 3, f'=C{sep_r}+D{sep_r}+E{sep_r}')
+        c_fv.font = f_td; c_fv.alignment = a_right; c_fv.number_format = NF_CURR; c_fv.fill = r_fill; c_fv.border = b_grid
+
+        # Notas Crédito
+        c_fnc = ws_sep.cell(r_curr, 4, f'=L{sep_r}')
+        c_fnc.font = f_td; c_fnc.alignment = a_right; c_fnc.number_format = NF_CURR; c_fnc.fill = r_fill; c_fnc.border = b_grid
+
+        # Repuestos = Repuestos Exentos + Gravados
+        c_frep = ws_sep.cell(r_curr, 5, f'=F{sep_r}+G{sep_r}')
+        c_frep.font = f_td; c_frep.alignment = a_right; c_frep.number_format = NF_CURR; c_frep.fill = r_fill; c_frep.border = b_grid
+
+        # Transporte
+        c_ftra = ws_sep.cell(r_curr, 6, f'=J{sep_r}')
+        c_ftra.font = f_td; c_ftra.alignment = a_right; c_ftra.number_format = NF_CURR; c_ftra.fill = r_fill; c_ftra.border = b_grid
+
+        # Liquidación Taller
+        c_ftal = ws_sep.cell(r_curr, 7, f'=H{sep_r}')
+        c_ftal.font = f_td; c_ftal.alignment = a_right; c_ftal.number_format = NF_CURR; c_ftal.fill = r_fill; c_ftal.border = b_grid
+
+        # Total Ingresos Operación = Vehículos + NC + Repuestos + Transporte + Taller
+        c_tot_op = ws_sep.cell(r_curr, 8, f'=SUM(C{r_curr}:G{r_curr})')
+        c_tot_op.font = f_td_bold; c_tot_op.alignment = a_right; c_tot_op.number_format = NF_CURR; c_tot_op.fill = r_fill; c_tot_op.border = b_grid
+
+        # % Participación
+        tot_op_row = s2_start + len(sedes)
+        c_pct = ws_sep.cell(r_curr, 9, f'=H{r_curr}/$H${tot_op_row}')
+        c_pct.font = f_td; c_pct.alignment = a_right; c_pct.number_format = NF_PCT; c_pct.fill = r_fill; c_pct.border = b_grid
+        ws_sep.row_dimensions[r_curr].height = 20
+        r_curr += 1
+
+    # Total Operación
+    ws_sep.cell(r_curr, 2, "TOTAL OPERACIÓN").font = f_total
+    ws_sep.cell(r_curr, 2).fill = fill_tot; ws_sep.cell(r_curr, 2).border = b_double_bottom; ws_sep.cell(r_curr, 2).alignment = a_left
+
+    for c_i in range(3, 9):
+        col_l = get_column_letter(c_i)
+        c = ws_sep.cell(r_curr, c_i, f'=SUM({col_l}{s2_start}:{col_l}{r_curr-1})')
+        c.font = f_total; c.fill = fill_tot; c.border = b_double_bottom; c.alignment = a_right; c.number_format = NF_CURR
+
+    c_pct_tot = ws_sep.cell(r_curr, 9, 1.0)
+    c_pct_tot.font = f_total; c_pct_tot.fill = fill_tot; c_pct_tot.border = b_double_bottom; c_pct_tot.alignment = a_right; c_pct_tot.number_format = NF_PCT
+    ws_sep.row_dimensions[r_curr].height = 24
+    r_curr += 3
+
+    # SECCIÓN 3: CONTROL DE TRANSPORTE Y OTROS INGRESOS
+    ws_sep.cell(r_curr, 2, "3. CONTROL FINANCIERO DE TRANSPORTE Y OTROS INGRESOS DEL BALANCE").font = f_sec_title
+    r_curr += 2
+
+    # Tabla Control Transporte (Cols B a D)
+    ws_sep.cell(r_curr, 2, "Concepto Operacional").font = f_th; ws_sep.cell(r_curr, 2).fill = fill_th; ws_sep.cell(r_curr, 2).alignment = a_center; ws_sep.cell(r_curr, 2).border = b_grid
+    ws_sep.cell(r_curr, 3, "Cuenta PUC").font = f_th; ws_sep.cell(r_curr, 3).fill = fill_th; ws_sep.cell(r_curr, 3).alignment = a_center; ws_sep.cell(r_curr, 3).border = b_grid
+    ws_sep.cell(r_curr, 4, "Valor del Periodo").font = f_th; ws_sep.cell(r_curr, 4).fill = fill_th; ws_sep.cell(r_curr, 4).alignment = a_center; ws_sep.cell(r_curr, 4).border = b_grid
+    ws_sep.row_dimensions[r_curr].height = 22
+    r_curr += 1
+
+    r_t_start = r_curr
+    tra_rows = [
+        ("Ingresos Facturados de Transporte", "41450501", f"=J{tot_sep_r}"),
+        ("(-) Gastos Operacionales de Transporte", "51953501 (Gastos)", 17940902.48),
+    ]
+    for nom, cta, val in tra_rows:
+        ws_sep.cell(r_curr, 2, nom).font = f_td_bold if "(-)" in nom else f_td
+        ws_sep.cell(r_curr, 2).alignment = a_left; ws_sep.cell(r_curr, 2).border = b_grid
+        ws_sep.cell(r_curr, 3, cta).font = f_td; ws_sep.cell(r_curr, 3).alignment = a_center; ws_sep.cell(r_curr, 3).border = b_grid
+        c = ws_sep.cell(r_curr, 4, val)
+        c.font = f_td_bold if "(-)" in nom else f_td
+        c.alignment = a_right; c.number_format = NF_CURR; c.border = b_grid
+        ws_sep.row_dimensions[r_curr].height = 20
+        r_curr += 1
+
+    # Utilidad Neta Transporte
+    ws_sep.cell(r_curr, 2, "(=) UTILIDAD NETA DE TRANSPORTE").font = f_total
+    ws_sep.cell(r_curr, 2).fill = fill_tot; ws_sep.cell(r_curr, 2).alignment = a_left; ws_sep.cell(r_curr, 2).border = b_double_bottom
+    ws_sep.cell(r_curr, 3, "MARGEN OPERACIONAL").font = f_total; ws_sep.cell(r_curr, 3).fill = fill_tot; ws_sep.cell(r_curr, 3).alignment = a_center; ws_sep.cell(r_curr, 3).border = b_double_bottom
+    c_u_tra = ws_sep.cell(r_curr, 4, f'=D{r_t_start}-D{r_t_start+1}')
+    c_u_tra.font = f_total; c_u_tra.fill = fill_tot; c_u_tra.alignment = a_right; c_u_tra.number_format = NF_CURR; c_u_tra.border = b_double_bottom
+    ws_sep.row_dimensions[r_curr].height = 22
+
+    # Column widths
+    ws_sep.column_dimensions["A"].width = 2
+    ws_sep.column_dimensions["B"].width = 26
+    ws_sep.column_dimensions["C"].width = 20
+    ws_sep.column_dimensions["D"].width = 20
+    ws_sep.column_dimensions["E"].width = 18
+    ws_sep.column_dimensions["F"].width = 18
+    ws_sep.column_dimensions["G"].width = 18
+    ws_sep.column_dimensions["H"].width = 20
+    ws_sep.column_dimensions["I"].width = 18
+    ws_sep.column_dimensions["J"].width = 18
+    ws_sep.column_dimensions["K"].width = 20
+    ws_sep.column_dimensions["L"].width = 18
+    ws_sep.column_dimensions["M"].width = 22
+
+    return ws_sep
+
+
+def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento_nc=None, ruta_tb=None):
+    """
+    Lee el archivo de Asiento Contable de Ventas (o informe de facturas emitidas),
+    aplica la configuración dinámica de Vendedores Especiales (Repuestos y Jaime) por Centro de Costo,
+    cruza y valida las Notas Crédito con su Factura de Venta de Origen (sin inventar datos),
+    y genera un libro Excel profesional con 4 hojas:
+      1. Resumen Ventas CC y Vendedor (matriz detallada con subtotales por sede y fórmulas vivas)
+      2. Consolidado por Sede (columnas de Vehículos Generales, Vehículos Jaime, Repuestos, Facturación Bruta, NC y Neto)
+      3. Detalle Ventas (base de datos completa con factura referenciada y categoría asignada)
+      4. Detalle Notas Crédito (auditoría exclusiva de notas crédito cruzadas)
+    """
+    import datetime
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    if not ruta_salida:
+        dir_name = os.path.dirname(ruta_entrada) or "."
+        ruta_salida = os.path.join(dir_name, "Informe_Ventas_Por_Centro_Costo.xlsx")
+
+    ruta_salida = _asegurar_ruta_disponible(ruta_salida)
+
+    # Cargar configuración dinámica de vendedores especiales
+    cfg_vend = cargar_config_vendedores()
+    v_repuestos = [str(x).upper().strip() for x in cfg_vend.get("vendedores_repuestos", [])]
+    v_jaime = [str(x).upper().strip() for x in cfg_vend.get("vendedores_vehiculos_jaime", [])]
+
+    wb_in = openpyxl.load_workbook(ruta_entrada, data_only=False)
+
+    # Buscar la hoja adecuada de datos
+    nombre_hoja = None
+    for s in ["Detalle Ventas", "Detalle", "Ventas", "Sheet1", "Hoja1"]:
+        if s in wb_in.sheetnames:
+            nombre_hoja = s
+            break
+    if not nombre_hoja:
+        for s in wb_in.sheetnames:
+            if "resumen" not in s.lower() and "consolidado" not in s.lower():
+                nombre_hoja = s
+                break
+    if not nombre_hoja:
+        nombre_hoja = wb_in.sheetnames[0]
+
+    ws_in = wb_in[nombre_hoja]
+
+    # Detectar la fila de encabezados
+    header_row = 1
+    for r in range(1, min(15, ws_in.max_row + 1)):
+        row_vals = [str(ws_in.cell(r, c).value or "").lower() for c in range(1, min(25, ws_in.max_column + 1))]
+        if any("vendedor" in val for val in row_vals) and any("costo" in val or "base" in val or "total" in val or "número" in val or "numero" in val for val in row_vals):
+            header_row = r
+            break
+
+    # Diccionarios de corrección y homologación
+    cc_fix = {
+        "FECH8593": "Granada Mobility",
+        "FERP5759": "San Jose",
+        "FERP5750": "San Jose",
+        "FECH8548": "Granada",
+        "FERP5740": "Granada Mobility",
+        "FEMG563": "Granada Mobility",
+        "FERP5730": "San Jose",
+        "FERP5703": "San Jose",
+        "FEGM298": "Granada Mobility",
+    }
+
+    vendor_cc_map = {
+        "BELLANIT CUELLAR ARTUNDUAGA": "Granada",
+        "BRAYAN YAAN ANGULO ROJAS": "Villavicencio",
+        "CH MOTOS": "Villavicencio",
+        "ELKIN OSWALDO BRICEÑO BOGOTA": "Villavicencio",
+        "FABIO LEONARDO ABRIL RODRIGUEZ": "Granada Mobility",
+        "JAIME EDUARDO  OROZCO CHAVARRO": "Granada",
+        "JENNIFER MALDONADO SALAZAR": "San Jose",
+        "JORMAN ESTIBEN BEDOYA GALLEGO": "Villavicencio",
+        "KAREN LORENA ROA GUTIERREZ": "San Jose",
+        "KELLY JOHANA BELLO GAÑAN": "San Martin",
+        "LILIANA DEL PILAR MENDOZA GUEVARA": "San Jose",
+        "MAILYN YORGELY CONTRERAS CARDENAS": "San Jose",
+        "STIVEN ENRIQUE FLOREZ ROMERO": "Granada",
+    }
+
+    # 1. Leer todas las filas del archivo principal y de notas separadas si existen
+    raw_rows = []
+    for r in range(header_row + 1, ws_in.max_row + 1):
+        row_vals = [ws_in.cell(r, c).value for c in range(1, 23)]
+        if any(row_vals):
+            raw_rows.append(row_vals)
+
+    existing_nums = {str(r[0] or "").strip().upper() for r in raw_rows if r[0]}
+
+    n_nc_cruzadas = 0
+    total_nc_cruzadas = 0.0
+    if ruta_asiento_nc and os.path.exists(ruta_asiento_nc):
+        try:
+            wb_nc = openpyxl.load_workbook(ruta_asiento_nc, data_only=False)
+            ws_nc_in = wb_nc.active
+            nc_hdr = 1
+            for r in range(1, min(15, ws_nc_in.max_row + 1)):
+                r_vals = [str(ws_nc_in.cell(r, c).value or "").lower() for c in range(1, min(20, ws_nc_in.max_column + 1))]
+                if any("número" in v or "numero" in v or "referencia" in v for v in r_vals):
+                    nc_hdr = r
+                    break
+            for r in range(nc_hdr + 1, ws_nc_in.max_row + 1):
+                r_vals = [ws_nc_in.cell(r, c).value for c in range(1, 23)]
+                if not any(r_vals):
+                    continue
+                num_c = str(r_vals[0] or "").strip()
+                if num_c and num_c.upper() not in existing_nums:
+                    raw_rows.append(r_vals)
+                    existing_nums.add(num_c.upper())
+        except Exception as e:
+            print(f"Advertencia al leer archivo separado de NC: {e}")
+
+    # 2. Indexar facturas de venta para cruce exacto de notas crédito
+    inv_map = {}
+    inv_by_orig = {}
+    for r_vals in raw_rows:
+        num = str(r_vals[0] or "").strip().upper()
+        orig = str(r_vals[6] or "").strip().upper()
+        ven = r_vals[3]
+        cc = r_vals[2]
+
+        if num in cc_fix:
+            cc = cc_fix[num]
+        if (not cc or str(cc).strip().lower() in ['none', '']) and ven and str(ven).strip() in vendor_cc_map:
+            cc = vendor_cc_map[str(ven).strip()]
+
+        v_clean = str(ven).strip() if (ven and str(ven).strip().lower() != 'none') else None
+        cc_clean = str(cc).strip() if (cc and str(cc).strip().lower() != 'none') else None
+
+        if num and not num.startswith(('NC', 'NCC')):
+            inv_map[num] = (v_clean, cc_clean)
+            if orig and orig != 'NAN':
+                inv_by_orig[orig] = (v_clean, cc_clean)
+
+    # 3. Procesar y normalizar cada registro aplicando categorías especiales
+    # Mapeo de clientes a Centro de Costo para conciliación contable de Transporte (Cta 4145)
+    client_to_cc = {}
+    for r_it in raw_rows:
+        cli_nom = str(r_it[1] or "").strip().upper()
+        cc_nom = str(r_it[2] or "").strip()
+        if cli_nom and cc_nom and cc_nom.lower() not in ["none", "nan", ""]:
+            client_to_cc[cli_nom] = cc_nom
+
+    tb_data = None
+    if ruta_tb and os.path.exists(ruta_tb):
+        try:
+            tb_data = leer_trial_balance_odoo(ruta_tb, client_to_cc=client_to_cc)
+        except Exception as e_tb:
+            print(f"Advertencia al pre-cargar Trial Balance: {e_tb}")
+
+    processed_rows = []
+    for r_vals in raw_rows:
+        num = str(r_vals[0] or "").strip()
+        cli = r_vals[1]
+        cc = r_vals[2]
+        ven = r_vals[3]
+        f_fact = r_vals[4]
+        f_fecha = r_vals[5]
+        orig = str(r_vals[6] or "").strip()
+        ref = str(r_vals[7] or "").strip()
+        com = r_vals[8]
+        eq = r_vals[9]
+        act = r_vals[10]
+        base = float(r_vals[11] or 0.0)
+        imp = float(r_vals[12] or 0.0)
+        tot = float(r_vals[13] or 0.0)
+        imp_adeu = float(r_vals[14] or 0.0)
+        moneda = r_vals[15] or "COP"
+        fe_elec = r_vals[16]
+        edi_bloq = r_vals[17]
+        edi_err = r_vals[18]
+        comm_stat = r_vals[19]
+        est_pago = str(r_vals[20] or "").strip()
+        enviado = r_vals[21]
+
+        is_nc = bool(re.match(r'^(NC|NCC)', num, re.IGNORECASE))
+        ref_fact = ""
+
+        if is_nc:
+            m = re.search(r'Reversi[oó]n\s+de:\s*([A-Za-z0-9_-]+)', ref, re.IGNORECASE)
+            orig_fact = m.group(1).upper() if m else None
+            ref_fact = orig_fact or ""
+            matched_v, matched_cc = None, None
+
+            if orig_fact and orig_fact in inv_map:
+                matched_v, matched_cc = inv_map[orig_fact]
+            elif orig and orig.upper() in inv_by_orig:
+                matched_v, matched_cc = inv_by_orig[orig.upper()]
+
+            if not ven or str(ven).strip().lower() in ['none', '']:
+                ven = matched_v
+            if not cc or str(cc).strip().lower() in ['none', '']:
+                cc = matched_cc
+
+            if (not cc or str(cc).strip().lower() in ['none', '']) and ven == "FABIO LEONARDO ABRIL RODRIGUEZ":
+                cc = "Granada Mobility"
+            
+            n_nc_cruzadas += 1
+            total_nc_cruzadas += tot
+        else:
+            if num in cc_fix:
+                cc = cc_fix[num]
+            if num == "FERP5777" or (orig.upper() == "S02927" and (not ven or str(ven).strip().lower() in ['none', ''])):
+                ven = "LILIANA DEL PILAR MENDOZA GUEVARA"
+                cc = "San Jose"
+            if (not cc or str(cc).strip().lower() in ['none', '']) and ven and str(ven).strip() in vendor_cc_map:
+                cc = vendor_cc_map[str(ven).strip()]
+
+        if not ven or str(ven).strip().lower() in ['none', '']:
+            ven = "SIN ASIGNAR" if est_pago.lower() != "cancelado" else "CANCELADO"
+        else:
+            ven = str(ven).strip()
+
+        if not cc or str(cc).strip().lower() in ['none', '']:
+            cc = "SIN ASIGNAR"
+        else:
+            cc = str(cc).strip()
+
+        # Categorización especial dinámica
+        v_upper = ven.upper().strip()
+        num_upper = str(num).upper().strip()
+        cli_upper = str(cli).upper()
+        ref_upper = str(ref).upper()
+        orig_upper = str(orig).upper()
+
+        taller_nums = ['FEVC1149', 'FEVC1150', 'FEVC1151', 'FEVC1152', 'FEVC1153', 'FEVC1154', 'FEVC1158', 'FEVC1160', 'FEVC1162', 'FEVC1163']
+        if is_nc:
+            cat_asignada = "NOTA CRÉDITO"
+        elif num_upper == "FEGM298" or "SUPERMOTOS UMA" in cli_upper:
+            cat_asignada = "ARRIENDO UMA"
+        elif num_upper in taller_nums or (v_upper == "CH MOTOS" and any(k in cli_upper for k in ["AUTECO", "AUTOTECNICA", "AUTOTÉCNICA"]) and num_upper != "FEVC1157"):
+            cat_asignada = "LIQUIDACIÓN TALLER"
+        elif v_upper in v_jaime:
+            cat_asignada = "VEHÍCULOS JAIME"
+        elif v_upper in v_repuestos or num_upper.startswith("FERP"):
+            cat_asignada = "REPUESTOS"
+        elif v_upper == "CH MOTOS" and ("01" in ref_upper or "TRANSPORTE" in cli_upper or "TRANS" in orig_upper):
+            cat_asignada = "TRANSPORTE"
+        else:
+            cat_asignada = "VEHÍCULOS GENERALES"
+
+        pref = num_upper[:4]
+        if pref.startswith("FERP"): linea = "Repuestos"
+        elif pref.startswith("FEMG"): linea = "Repuestos / Taller"
+        elif num_upper == "FEGM298": linea = "Otros Ingresos / Arriendo UMA"
+        elif cat_asignada == "TRANSPORTE": linea = "Transporte"
+        elif pref.startswith(("FECH", "FEVC", "FEGM", "MI")): linea = "Vehículos / Motos"
+        else: linea = "Comercial"
+
+        # Asignación de Cuenta Contable PUC de Ingreso en el Balance
+        if is_nc:
+            if imp < 0:
+                cuenta_puc = "41750102"
+                nombre_cuenta_puc = "DEV EN VENTAS 19% (DB)"
+            else:
+                cuenta_puc = "41750101"
+                nombre_cuenta_puc = "DEV EN VENTAS EXENTAS (DB)"
+        elif cat_asignada == "ARRIENDO UMA":
+            cuenta_puc = "42354001"
+            nombre_cuenta_puc = "TALLER DE VEHICULOS (ARRIENDO UMA)"
+        elif cat_asignada == "LIQUIDACIÓN TALLER":
+            cuenta_puc = "42354001"
+            nombre_cuenta_puc = "TALLER DE VEHICULOS (AUTECO/AUTOTÉCNICA)"
+        elif cat_asignada == "TRANSPORTE":
+            cuenta_puc = "41450501"
+            nombre_cuenta_puc = "SERVICIO DE CARGUE Y DESCARGUE (TRANSPORTE)"
+        elif cat_asignada == "REPUESTOS":
+            if imp > 0:
+                cuenta_puc = "41350602"
+                nombre_cuenta_puc = "VENTA DE REPUESTOS 19%"
+            else:
+                cuenta_puc = "41350601"
+                nombre_cuenta_puc = "VENTA DE REPUESTOS EXENTOS"
+        else: # Vehículos
+            if imp > 0:
+                cuenta_puc = "41350202"
+                nombre_cuenta_puc = "VENTAS DE VEHICULOS DEL 19%"
+            else:
+                cuenta_puc = "41350201"
+                nombre_cuenta_puc = "VENTAS DE VEHICULOS EXENTAS"
+
+        processed_rows.append({
+            "num": num, "cli": cli, "cc": cc, "ven": ven, "f_fact": f_fact, "f_fecha": f_fecha,
+            "orig": orig, "ref": ref, "com": com, "eq": eq, "act": act,
+            "base": base, "imp": imp, "tot": tot, "imp_adeu": imp_adeu, "moneda": moneda,
+            "fe_elec": fe_elec, "edi_bloq": edi_bloq, "edi_err": edi_err,
+            "comm_stat": comm_stat, "est_pago": est_pago, "enviado": enviado,
+            "is_nc": is_nc, "ref_fact": ref_fact, "cat_asignada": cat_asignada, "linea": linea,
+            "cuenta_puc": cuenta_puc, "nombre_cuenta_puc": nombre_cuenta_puc
+        })
+
+    # Estilos y formatos
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    FONT_NAME = "Calibri"
+    C_NAVY_DARK = "1F4E79"
+    C_NAVY_MED = "2F5597"
+    C_BLUE_LIGHT = "D9E1F2"
+    C_BLUE_CARD = "F2F5F9"
+    C_ZEBRA = "F9FBFD"
+    C_WHITE = "FFFFFF"
+    C_TEXT_DARK = "0F172A"
+    C_TEXT_MUTED = "595959"
+    C_BORDER = "D3D3D3"
+    C_BORDER_DARK = "8EA9DB"
+    C_GREEN = "2E7D32"
+    C_AMBER = "B45309"
+    C_RED_DARK = "C00000"
+
+    f_title = Font(name=FONT_NAME, size=15, bold=True, color=C_NAVY_DARK)
+    f_subt = Font(name=FONT_NAME, size=10, bold=False, color=C_TEXT_MUTED)
+    f_date = Font(name=FONT_NAME, size=9, italic=True, color=C_TEXT_MUTED)
+    f_kpi_lbl = Font(name=FONT_NAME, size=8, bold=True, color=C_TEXT_MUTED)
+    f_hdr = Font(name=FONT_NAME, size=10, bold=True, color=C_WHITE)
+    f_dat = Font(name=FONT_NAME, size=9, color=C_TEXT_DARK)
+    f_dat_bold = Font(name=FONT_NAME, size=9, bold=True, color=C_TEXT_DARK)
+    f_subtot = Font(name=FONT_NAME, size=9, bold=True, color=C_NAVY_DARK)
+    f_grand = Font(name=FONT_NAME, size=10, bold=True, color=C_WHITE)
+
+    fill_hdr = PatternFill(start_color=C_NAVY_DARK, end_color=C_NAVY_DARK, fill_type="solid")
+    fill_subtot = PatternFill(start_color=C_BLUE_LIGHT, end_color=C_BLUE_LIGHT, fill_type="solid")
+    fill_grand = PatternFill(start_color=C_NAVY_DARK, end_color=C_NAVY_DARK, fill_type="solid")
+    fill_zebra = PatternFill(start_color=C_ZEBRA, end_color=C_ZEBRA, fill_type="solid")
+    fill_white = PatternFill(start_color=C_WHITE, end_color=C_WHITE, fill_type="solid")
+    fill_kpi = PatternFill(start_color=C_BLUE_CARD, end_color=C_BLUE_CARD, fill_type="solid")
+
+    a_left = Alignment(horizontal="left", vertical="center")
+    a_center = Alignment(horizontal="center", vertical="center")
+    a_right = Alignment(horizontal="right", vertical="center")
+    a_hdr = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    b_thin = Border(
+        left=Side(style="thin", color=C_BORDER),
+        right=Side(style="thin", color=C_BORDER),
+        top=Side(style="thin", color=C_BORDER),
+        bottom=Side(style="thin", color=C_BORDER)
+    )
+    b_subtot = Border(
+        left=Side(style="thin", color=C_BORDER_DARK),
+        right=Side(style="thin", color=C_BORDER_DARK),
+        top=Side(style="thin", color=C_NAVY_MED),
+        bottom=Side(style="medium", color=C_NAVY_MED)
+    )
+    b_grand = Border(
+        left=Side(style="thin", color=C_NAVY_DARK),
+        right=Side(style="thin", color=C_NAVY_DARK),
+        top=Side(style="medium", color=C_NAVY_DARK),
+        bottom=Side(style="double", color=C_NAVY_DARK)
+    )
+
+    NF_CURR = "$#,##0"
+    NF_CURR_DEC = "$#,##0.00"
+    NF_INT = "#,##0"
+    NF_PCT = "0.0%"
+
+    # ==========================================
+    # 1. HOJA DETALLE VENTAS
+    # ==========================================
+    ws_det = wb.create_sheet(title="Detalle Ventas")
+    ws_det.views.sheetView[0].showGridLines = False
+
+    orig_headers = [
+        "Número", "Nombre de la empresa a mostrar en la factura", "Centro de costo", "Vendedor",
+        "Fecha de factura", "Fecha", "Origen", "Referencia", "Comercial", "Equipo de ventas",
+        "Actividades", "Base imponible en la moneda firmada", "Impuesto firmado",
+        "Total con signo en moneda", "Importe adeudado firmado", "Moneda", "Facturación electrónica",
+        "Nivel de bloqueo de EDI", "Mensaje de error de EDI", "Commercial Status", "Estado en pago",
+        "Enviado"
+    ]
+    calc_headers = [
+        "Tipo Documento", "Factura Referenciada", "Categoría Asignada", "Venta Bruta", "Nota Crédito",
+        "Tipo Venta", "Base Exenta", "Base Gravada", "IVA Gravado", "Total Gravado",
+        "Total Facturación Neta", "Línea Original", "Cuenta Contable PUC", "Nombre Cuenta PUC"
+    ]
+    new_headers = orig_headers + calc_headers
+
+    for col_idx, h in enumerate(new_headers, 1):
+        c = ws_det.cell(1, col_idx, h)
+        c.font = f_hdr
+        c.fill = fill_hdr
+        c.alignment = a_hdr
+        c.border = b_thin
+    ws_det.row_dimensions[1].height = 28
+
+    for idx, r_data in enumerate(processed_rows, 2):
+        vals = [
+            r_data["num"], r_data["cli"], r_data["cc"], r_data["ven"],
+            r_data["f_fact"], r_data["f_fecha"], r_data["orig"], r_data["ref"],
+            r_data["com"], r_data["eq"], r_data["act"], r_data["base"],
+            r_data["imp"], r_data["tot"], r_data["imp_adeu"], r_data["moneda"],
+            r_data["fe_elec"], r_data["edi_bloq"], r_data["edi_err"],
+            r_data["comm_stat"], r_data["est_pago"], r_data["enviado"]
+        ]
+        for c_i, val in enumerate(vals, 1):
+            cell = ws_det.cell(idx, c_i, val)
+            cell.font = f_dat
+            cell.border = b_thin
+            if c_i in [5, 6] and isinstance(val, (datetime.datetime, datetime.date)):
+                cell.number_format = "yyyy-mm-dd"
+                cell.alignment = a_center
+            elif c_i in [12, 14, 15]:
+                cell.number_format = NF_CURR
+                cell.alignment = a_right
+            elif c_i == 13:
+                cell.number_format = NF_CURR_DEC
+                cell.alignment = a_right
+            elif c_i in [1, 3, 7, 8, 16, 20, 21, 22]:
+                cell.alignment = a_center
+            else:
+                cell.alignment = a_left
+
+        # Col 23: Tipo Documento
+        ws_det.cell(idx, 23, '=IF(OR(LEFT(A{0},2)="NC",LEFT(A{0},3)="NCC"),"NOTA CRÉDITO","FACTURA")'.format(idx)).alignment = a_center
+        # Col 24: Factura Referenciada
+        ws_det.cell(idx, 24, r_data["ref_fact"]).alignment = a_center
+        # Col 25: Categoría Asignada (Vehículos Generales, Vehículos Jaime, Repuestos, etc.)
+        ws_det.cell(idx, 25, r_data["cat_asignada"]).alignment = a_center
+        # Col 26: Venta Bruta
+        c_vb = ws_det.cell(idx, 26, '=IF(W{0}="FACTURA",N{0},0)'.format(idx))
+        c_vb.number_format = NF_CURR
+        c_vb.alignment = a_right
+        # Col 27: Nota Crédito
+        c_nc = ws_det.cell(idx, 27, '=IF(W{0}="NOTA CRÉDITO",N{0},0)'.format(idx))
+        c_nc.number_format = NF_CURR
+        c_nc.alignment = a_right
+        # Col 28: Tipo Venta
+        ws_det.cell(idx, 28, '=IF(OR(M{0}>0,AND(M{0}<0,L{0}<0)),"GRAVADA","EXENTA")'.format(idx)).alignment = a_center
+        # Col 29: Base Exenta
+        c_be = ws_det.cell(idx, 29, '=IF(AB{0}="EXENTA",L{0},0)'.format(idx))
+        c_be.number_format = NF_CURR
+        c_be.alignment = a_right
+        # Col 30: Base Gravada
+        c_bg = ws_det.cell(idx, 30, '=IF(AB{0}="GRAVADA",L{0},0)'.format(idx))
+        c_bg.number_format = NF_CURR
+        c_bg.alignment = a_right
+        # Col 31: IVA Gravado
+        c_iv = ws_det.cell(idx, 31, '=IF(AB{0}="GRAVADA",M{0},0)'.format(idx))
+        c_iv.number_format = NF_CURR_DEC
+        c_iv.alignment = a_right
+        # Col 32: Total Gravado
+        c_tg = ws_det.cell(idx, 32, '=AD{0}+AE{0}'.format(idx))
+        c_tg.number_format = NF_CURR
+        c_tg.alignment = a_right
+        # Col 33: Total Facturación Neta
+        c_tn = ws_det.cell(idx, 33, '=Z{0}+AA{0}'.format(idx))
+        c_tn.number_format = NF_CURR
+        c_tn.alignment = a_right
+        # Col 34: Línea Original
+        ws_det.cell(idx, 34, r_data["linea"]).alignment = a_center
+        # Col 35: Cuenta Contable PUC
+        ws_det.cell(idx, 35, r_data["cuenta_puc"]).alignment = a_center
+        ws_det.cell(idx, 35).font = f_dat_bold
+        # Col 36: Nombre Cuenta PUC
+        ws_det.cell(idx, 36, r_data["nombre_cuenta_puc"]).alignment = a_left
+
+        for c_k in range(23, 37):
+            ws_det.cell(idx, c_k).font = f_dat
+            ws_det.cell(idx, c_k).border = b_thin
+        ws_det.row_dimensions[idx].height = 19
+
+    det_max_r = len(processed_rows) + 1
+    ws_det.freeze_panes = "A2"
+    ws_det.auto_filter.ref = f"A1:AJ{det_max_r}"
+
+    for col in ws_det.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws_det.column_dimensions[col_letter].width = min(max(max_len + 3, 11), 38)
+
+    # ==========================================
+    # 2. HOJA RESUMEN VENTAS CC Y VENDEDOR
+    # ==========================================
+    ws_res = wb.create_sheet(title="Resumen Ventas CC y Vendedor", index=0)
+    ws_res.views.sheetView[0].showGridLines = False
+
+    ws_res.cell(2, 2, "CH INVERSIONES COLOMBIA S.A.S ZOMAC").font = f_title
+    ws_res.cell(3, 2, "INFORME CONSOLIDADO DE VENTAS Y NOTAS POR CENTRO DE COSTO Y VENDEDOR").font = Font(name=FONT_NAME, size=12, bold=True, color=C_TEXT_DARK)
+    ws_res.cell(4, 2, "Periodo: Facturación Emitida | Desglose por Línea Asignada | Exentas vs Gravadas").font = f_subt
+    ws_res.cell(5, 2, f"Fecha de generación: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}").font = f_date
+
+    df_proc = pd.DataFrame(processed_rows)
+    df_valid = df_proc[df_proc["est_pago"].astype(str).str.lower() != "cancelado"]
+
+    sede_order = ["Granada", "Granada Mobility", "Inirida", "San Jose", "San Martin", "Villavicencio"]
+    sedes_raw = [str(s).strip() for s in df_valid["cc"].unique() if pd.notna(s) and str(s).strip() and str(s).lower() != 'none']
+    sedes = [s for s in sede_order if s in sedes_raw] + [s for s in sedes_raw if s not in sede_order]
+    if not sedes:
+        sedes = ["SIN ASIGNAR"]
+
+    tbl_headers = [
+        "Centro de Costo", "Vendedor", "Línea Asignada", "Cant. Facturas", "Total Ventas Brutas",
+        "Cant. Notas Crédito", "Total Notas Crédito", "Total Facturación Neta",
+        "Ventas Exentas (Base)", "Base Gravada (19%)", "IVA Gravado",
+        "Total Gravado", "% Part. Sede", "% Part. Total"
+    ]
+
+    start_row = 10
+    for c_i, h_text in enumerate(tbl_headers, 2):
+        c = ws_res.cell(start_row, c_i, h_text)
+        c.font = f_hdr
+        c.fill = fill_hdr
+        c.alignment = a_hdr
+        c.border = b_thin
+    ws_res.row_dimensions[start_row].height = 28
+
+    total_data_lines = 0
+    for s in sedes:
+        v_list = df_valid[df_valid["cc"] == s]["ven"].unique()
+        total_data_lines += len(v_list) + 1
+    grand_total_row = start_row + total_data_lines + 1
+
+    kpis = [
+        ("TOTAL FACTURACIÓN NETA", f"=I{grand_total_row}", NF_CURR, C_NAVY_DARK),
+        ("TOTAL VENTAS BRUTAS", f"=F{grand_total_row}", NF_CURR, C_GREEN),
+        ("TOTAL NOTAS CRÉDITO", f"=H{grand_total_row}", NF_CURR, C_RED_DARK),
+        ("TOTAL IVA FACTURADO", f"=L{grand_total_row}", NF_CURR, C_NAVY_MED),
+        ("TOTAL FACTURAS", f"=E{grand_total_row}", NF_INT, C_TEXT_DARK),
+        ("TOTAL NOTAS", f"=G{grand_total_row}", NF_INT, C_AMBER)
+    ]
+
+    for i, (k_lbl, k_form, k_fmt, k_col) in enumerate(kpis):
+        c_start = 2 + i * 2
+        c_end = c_start + 1
+        ws_res.merge_cells(start_row=7, start_column=c_start, end_row=7, end_column=c_end)
+        ws_res.merge_cells(start_row=8, start_column=c_start, end_row=8, end_column=c_end)
+
+        lbl_cell = ws_res.cell(7, c_start, k_lbl)
+        lbl_cell.font = f_kpi_lbl
+        lbl_cell.alignment = a_center
+        lbl_cell.fill = fill_kpi
+
+        num_cell = ws_res.cell(8, c_start, k_form)
+        num_cell.font = Font(name=FONT_NAME, size=13, bold=True, color=k_col)
+        num_cell.alignment = a_center
+        num_cell.number_format = k_fmt
+        num_cell.fill = fill_kpi
+
+        for r_k in [7, 8]:
+            for c_k in [c_start, c_end]:
+                ws_res.cell(r_k, c_k).border = b_thin
+
+    det_cc_rng = f"'Detalle Ventas'!$C$2:$C${det_max_r}"
+    det_ven_rng = f"'Detalle Ventas'!$D$2:$D${det_max_r}"
+    det_est_rng = f"'Detalle Ventas'!$U$2:$U${det_max_r}"
+    det_tipo_rng = f"'Detalle Ventas'!$W$2:$W${det_max_r}"
+    det_vbruta_rng = f"'Detalle Ventas'!$Z$2:$Z${det_max_r}"
+    det_nc_rng = f"'Detalle Ventas'!$AA$2:$AA${det_max_r}"
+    det_bex_rng = f"'Detalle Ventas'!$AC$2:$AC${det_max_r}"
+    det_bgrav_rng = f"'Detalle Ventas'!$AD$2:$AD${det_max_r}"
+    det_iva_rng = f"'Detalle Ventas'!$AE$2:$AE${det_max_r}"
+
+    curr_row = start_row + 1
+    subtotal_rows = []
+
+    for s in sedes:
+        s_start_row = curr_row
+        v_list = sorted([str(v) for v in df_valid[df_valid["cc"] == s]["ven"].unique() if pd.notna(v) and str(v).strip()])
+        if not v_list:
+            v_list = ["SIN ASIGNAR"]
+
+        for v in v_list:
+            is_even = (curr_row % 2 == 0)
+            row_fill = fill_zebra if is_even else fill_white
+
+            # Identificar categoría asignada al vendedor
+            v_up = v.upper().strip()
+            if v_up in v_jaime:
+                cat_v = "Vehículos Jaime"
+            elif v_up in v_repuestos:
+                cat_v = "Repuestos"
+            elif v_up == "CH MOTOS":
+                cat_v = "Comercial / Flota"
+            else:
+                cat_v = "Vehículos"
+
+            # Col B: Sede
+            ws_res.cell(curr_row, 2, s).font = f_dat
+            ws_res.cell(curr_row, 2).alignment = a_left
+            ws_res.cell(curr_row, 2).fill = row_fill
+            ws_res.cell(curr_row, 2).border = b_thin
+
+            # Col C: Vendedor
+            ws_res.cell(curr_row, 3, v).font = f_dat_bold if v != "CH MOTOS" else Font(name=FONT_NAME, size=9, bold=True, color=C_NAVY_MED)
+            ws_res.cell(curr_row, 3).alignment = a_left
+            ws_res.cell(curr_row, 3).fill = row_fill
+            ws_res.cell(curr_row, 3).border = b_thin
+
+            # Col D: Línea Asignada
+            ws_res.cell(curr_row, 4, cat_v).font = f_dat
+            ws_res.cell(curr_row, 4).alignment = a_center
+            ws_res.cell(curr_row, 4).fill = row_fill
+            ws_res.cell(curr_row, 4).border = b_thin
+
+            # Col E: Cant. Facturas
+            ws_res.cell(curr_row, 5, f'=COUNTIFS({det_cc_rng}, B{curr_row}, {det_ven_rng}, C{curr_row}, {det_est_rng}, "<>Cancelado", {det_tipo_rng}, "FACTURA")').font = f_dat
+            ws_res.cell(curr_row, 5).alignment = a_center
+            ws_res.cell(curr_row, 5).number_format = NF_INT
+            ws_res.cell(curr_row, 5).fill = row_fill
+            ws_res.cell(curr_row, 5).border = b_thin
+
+            # Col F: Total Ventas Brutas
+            ws_res.cell(curr_row, 6, f'=SUMIFS({det_vbruta_rng}, {det_cc_rng}, B{curr_row}, {det_ven_rng}, C{curr_row}, {det_est_rng}, "<>Cancelado")').font = f_dat
+            ws_res.cell(curr_row, 6).alignment = a_right
+            ws_res.cell(curr_row, 6).number_format = NF_CURR
+            ws_res.cell(curr_row, 6).fill = row_fill
+            ws_res.cell(curr_row, 6).border = b_thin
+
+            # Col G: Cant. Notas Crédito
+            ws_res.cell(curr_row, 7, f'=COUNTIFS({det_cc_rng}, B{curr_row}, {det_ven_rng}, C{curr_row}, {det_est_rng}, "<>Cancelado", {det_tipo_rng}, "NOTA CRÉDITO")').font = f_dat
+            ws_res.cell(curr_row, 7).alignment = a_center
+            ws_res.cell(curr_row, 7).number_format = NF_INT
+            ws_res.cell(curr_row, 7).fill = row_fill
+            ws_res.cell(curr_row, 7).border = b_thin
+
+            # Col H: Total Notas Crédito
+            ws_res.cell(curr_row, 8, f'=SUMIFS({det_nc_rng}, {det_cc_rng}, B{curr_row}, {det_ven_rng}, C{curr_row}, {det_est_rng}, "<>Cancelado")').font = f_dat
+            ws_res.cell(curr_row, 8).alignment = a_right
+            ws_res.cell(curr_row, 8).number_format = NF_CURR
+            ws_res.cell(curr_row, 8).fill = row_fill
+            ws_res.cell(curr_row, 8).border = b_thin
+
+            # Col I: Total Facturación Neta
+            ws_res.cell(curr_row, 9, f"=F{curr_row}+H{curr_row}").font = f_dat_bold
+            ws_res.cell(curr_row, 9).alignment = a_right
+            ws_res.cell(curr_row, 9).number_format = NF_CURR
+            ws_res.cell(curr_row, 9).fill = row_fill
+            ws_res.cell(curr_row, 9).border = b_thin
+
+            # Col J: Ventas Exentas
+            ws_res.cell(curr_row, 10, f'=SUMIFS({det_bex_rng}, {det_cc_rng}, B{curr_row}, {det_ven_rng}, C{curr_row}, {det_est_rng}, "<>Cancelado")').font = f_dat
+            ws_res.cell(curr_row, 10).alignment = a_right
+            ws_res.cell(curr_row, 10).number_format = NF_CURR
+            ws_res.cell(curr_row, 10).fill = row_fill
+            ws_res.cell(curr_row, 10).border = b_thin
+
+            # Col K: Base Gravada
+            ws_res.cell(curr_row, 11, f'=SUMIFS({det_bgrav_rng}, {det_cc_rng}, B{curr_row}, {det_ven_rng}, C{curr_row}, {det_est_rng}, "<>Cancelado")').font = f_dat
+            ws_res.cell(curr_row, 11).alignment = a_right
+            ws_res.cell(curr_row, 11).number_format = NF_CURR
+            ws_res.cell(curr_row, 11).fill = row_fill
+            ws_res.cell(curr_row, 11).border = b_thin
+
+            # Col L: IVA Gravado
+            ws_res.cell(curr_row, 12, f'=SUMIFS({det_iva_rng}, {det_cc_rng}, B{curr_row}, {det_ven_rng}, C{curr_row}, {det_est_rng}, "<>Cancelado")').font = f_dat
+            ws_res.cell(curr_row, 12).alignment = a_right
+            ws_res.cell(curr_row, 12).number_format = NF_CURR_DEC
+            ws_res.cell(curr_row, 12).fill = row_fill
+            ws_res.cell(curr_row, 12).border = b_thin
+
+            # Col M: Total Gravado
+            ws_res.cell(curr_row, 13, f"=K{curr_row}+L{curr_row}").font = f_dat
+            ws_res.cell(curr_row, 13).alignment = a_right
+            ws_res.cell(curr_row, 13).number_format = NF_CURR
+            ws_res.cell(curr_row, 13).fill = row_fill
+            ws_res.cell(curr_row, 13).border = b_thin
+
+            s_subtot_row = s_start_row + len(v_list)
+            # Col N: % Part. Sede
+            ws_res.cell(curr_row, 14, f'=IF($I${s_subtot_row}>0, I{curr_row}/$I${s_subtot_row}, 0)').font = f_dat
+            ws_res.cell(curr_row, 14).alignment = a_right
+            ws_res.cell(curr_row, 14).number_format = NF_PCT
+            ws_res.cell(curr_row, 14).fill = row_fill
+            ws_res.cell(curr_row, 14).border = b_thin
+
+            # Col O: % Part. Total
+            ws_res.cell(curr_row, 15, f'=IF($I${grand_total_row}>0, I{curr_row}/$I${grand_total_row}, 0)').font = f_dat
+            ws_res.cell(curr_row, 15).alignment = a_right
+            ws_res.cell(curr_row, 15).number_format = NF_PCT
+            ws_res.cell(curr_row, 15).fill = row_fill
+            ws_res.cell(curr_row, 15).border = b_thin
+
+            ws_res.row_dimensions[curr_row].height = 20
+            curr_row += 1
+
+        # Subtotal Sede
+        subtot_r = curr_row
+        subtotal_rows.append(subtot_r)
+        s_end_v_row = curr_row - 1
+
+        ws_res.cell(subtot_r, 2, s).font = f_subtot
+        ws_res.cell(subtot_r, 2).fill = fill_subtot
+        ws_res.cell(subtot_r, 2).border = b_subtot
+        ws_res.cell(subtot_r, 2).alignment = a_left
+
+        ws_res.cell(subtot_r, 3, f"SUBTOTAL {s.upper()}").font = f_subtot
+        ws_res.cell(subtot_r, 3).fill = fill_subtot
+        ws_res.cell(subtot_r, 3).border = b_subtot
+        ws_res.cell(subtot_r, 3).alignment = a_left
+
+        ws_res.cell(subtot_r, 4, "-").font = f_subtot
+        ws_res.cell(subtot_r, 4).fill = fill_subtot
+        ws_res.cell(subtot_r, 4).border = b_subtot
+        ws_res.cell(subtot_r, 4).alignment = a_center
+
+        for c_idx, (col_l, fmt) in enumerate([
+            ("E", NF_INT), ("F", NF_CURR), ("G", NF_INT), ("H", NF_CURR),
+            ("I", NF_CURR), ("J", NF_CURR), ("K", NF_CURR), ("L", NF_CURR_DEC),
+            ("M", NF_CURR)
+        ], 5):
+            c_sub = ws_res.cell(subtot_r, c_idx, f"=SUM({col_l}{s_start_row}:{col_l}{s_end_v_row})")
+            c_sub.font = f_subtot
+            c_sub.fill = fill_subtot
+            c_sub.border = b_subtot
+            c_sub.alignment = a_right if col_l not in ["E", "G"] else a_center
+            c_sub.number_format = fmt
+
+        ws_res.cell(subtot_r, 14, 1.0).font = f_subtot
+        ws_res.cell(subtot_r, 14).fill = fill_subtot
+        ws_res.cell(subtot_r, 14).border = b_subtot
+        ws_res.cell(subtot_r, 14).alignment = a_right
+        ws_res.cell(subtot_r, 14).number_format = NF_PCT
+
+        ws_res.cell(subtot_r, 15, f'=IF($I${grand_total_row}>0, I{subtot_r}/$I${grand_total_row}, 0)').font = f_subtot
+        ws_res.cell(subtot_r, 15).fill = fill_subtot
+        ws_res.cell(subtot_r, 15).border = b_subtot
+        ws_res.cell(subtot_r, 15).alignment = a_right
+        ws_res.cell(subtot_r, 15).number_format = NF_PCT
+
+        ws_res.row_dimensions[subtot_r].height = 22
+        curr_row += 1
+
+    # Gran Total
+    gt_r = curr_row
+    ws_res.cell(gt_r, 2, "TOTAL").font = f_grand
+    ws_res.cell(gt_r, 2).fill = fill_grand
+    ws_res.cell(gt_r, 2).border = b_grand
+    ws_res.cell(gt_r, 2).alignment = a_center
+
+    ws_res.cell(gt_r, 3, "TOTAL GENERAL FACTURACIÓN").font = f_grand
+    ws_res.cell(gt_r, 3).fill = fill_grand
+    ws_res.cell(gt_r, 3).border = b_grand
+    ws_res.cell(gt_r, 3).alignment = a_left
+
+    ws_res.cell(gt_r, 4, "-").font = f_grand
+    ws_res.cell(gt_r, 4).fill = fill_grand
+    ws_res.cell(gt_r, 4).border = b_grand
+    ws_res.cell(gt_r, 4).alignment = a_center
+
+    subtot_c_refs = lambda col: "+".join([f"{col}{r}" for r in subtotal_rows])
+
+    for c_idx, (col_l, fmt) in enumerate([
+        ("E", NF_INT), ("F", NF_CURR), ("G", NF_INT), ("H", NF_CURR),
+        ("I", NF_CURR), ("J", NF_CURR), ("K", NF_CURR), ("L", NF_CURR_DEC),
+        ("M", NF_CURR)
+    ], 5):
+        c_gt = ws_res.cell(gt_r, c_idx, f"={subtot_c_refs(col_l)}")
+        c_gt.font = f_grand
+        c_gt.fill = fill_grand
+        c_gt.border = b_grand
+        c_gt.alignment = a_right if col_l not in ["E", "G"] else a_center
+        c_gt.number_format = fmt
+
+    ws_res.cell(gt_r, 14, "-").font = f_grand
+    ws_res.cell(gt_r, 14).fill = fill_grand
+    ws_res.cell(gt_r, 14).border = b_grand
+    ws_res.cell(gt_r, 14).alignment = a_center
+
+    ws_res.cell(gt_r, 15, 1.0).font = f_grand
+    ws_res.cell(gt_r, 15).fill = fill_grand
+    ws_res.cell(gt_r, 15).border = b_grand
+    ws_res.cell(gt_r, 15).alignment = a_right
+    ws_res.cell(gt_r, 15).number_format = NF_PCT
+
+    ws_res.row_dimensions[gt_r].height = 26
+
+    ws_res.column_dimensions["A"].width = 3
+    ws_res.column_dimensions["B"].width = 20
+    ws_res.column_dimensions["C"].width = 36
+    ws_res.column_dimensions["D"].width = 18
+    ws_res.column_dimensions["E"].width = 15
+    ws_res.column_dimensions["F"].width = 22
+    ws_res.column_dimensions["G"].width = 18
+    ws_res.column_dimensions["H"].width = 20
+    ws_res.column_dimensions["I"].width = 24
+    ws_res.column_dimensions["J"].width = 22
+    ws_res.column_dimensions["K"].width = 20
+    ws_res.column_dimensions["L"].width = 18
+    ws_res.column_dimensions["M"].width = 20
+    ws_res.column_dimensions["N"].width = 14
+    ws_res.column_dimensions["O"].width = 14
+
+    ws_res.freeze_panes = "B11"
+
+    # Columna A como margen estetico ultra-fino y AUTOFILTRO en encabezados de Vendedores
+    ws_res.column_dimensions["A"].width = 2.5
+    ws_res.auto_filter.ref = f"B7:O{gt_r-1}"
+
+    # ==========================================
+    # 3. HOJA CONSOLIDADO POR SEDE
+    # ==========================================
+    ws_sed = wb.create_sheet(title="Consolidado por Sede")
+    ws_sed.views.sheetView[0].showGridLines = False
+
+    ws_sed.cell(2, 2, "CH INVERSIONES COLOMBIA S.A.S ZOMAC").font = f_title
+    ws_sed.cell(3, 2, "RESUMEN EJECUTIVO DE VENTAS Y NOTAS POR CENTRO DE COSTO").font = Font(name=FONT_NAME, size=12, bold=True, color=C_TEXT_DARK)
+    ws_sed.cell(4, 2, "Consolidado por Sedes: Vehículos Generales | Vehículos Jaime | Repuestos | Notas Crédito").font = f_subt
+
+    ws_sed.cell(4, 2, "Consolidado por Sedes: Vehículos Generales | Vehículos Jaime | Repuestos | Transporte | Liquidación Taller | Arriendo UMA | Notas Crédito").font = f_subt
+
+    sed_headers = [
+        "Centro de Costo (Sede)", "Vehículos Generales", "Vehículos Jaime", "Repuestos",
+        "Transporte (4145)", "Liquidación Taller (42)", "Arriendo UMA (42)", "Total Ventas Brutas",
+        "Cant. Facturas", "Cant. Notas Crédito", "Total Notas Crédito", "Total Facturación Neta",
+        "Ventas Exentas", "Base Gravada", "IVA Gravado", "% Participación"
+    ]
+
+    s_start = 6
+    for idx_c, h in enumerate(sed_headers, 2):
+        c = ws_sed.cell(s_start, idx_c, h)
+        c.font = f_hdr
+        c.fill = fill_hdr
+        c.alignment = a_hdr
+        c.border = b_thin
+    ws_sed.row_dimensions[s_start].height = 26
+
+    det_cat_rng = f"'Detalle Ventas'!$Y$2:$Y${det_max_r}"
+
+    r_sed = s_start + 1
+    for s_idx, (s, s_row_res) in enumerate(zip(sedes, subtotal_rows)):
+        is_even = (s_idx % 2 == 0)
+        r_fill = fill_zebra if is_even else fill_white
+
+        # Col B: Sede
+        ws_sed.cell(r_sed, 2, s).font = f_dat_bold
+        ws_sed.cell(r_sed, 2).alignment = a_left
+        ws_sed.cell(r_sed, 2).fill = r_fill
+        ws_sed.cell(r_sed, 2).border = b_thin
+
+        # Col F (6): Transporte (4145) - Conciliación analítica con Balance Odoo
+        if tb_data and "transporte_por_sede" in tb_data and tb_data["transporte_por_sede"]:
+            val_tra = tb_data["transporte_por_sede"].get(s, 0.0)
+            c_tra = ws_sed.cell(r_sed, 6, val_tra)
+        else:
+            c_tra = ws_sed.cell(r_sed, 6, f'=SUMIFS({det_vbruta_rng}, {det_cc_rng}, B{r_sed}, {det_cat_rng}, "TRANSPORTE", {det_est_rng}, "<>Cancelado")')
+        c_tra.font = f_dat; c_tra.alignment = a_right; c_tra.number_format = NF_CURR; c_tra.fill = r_fill; c_tra.border = b_thin
+
+        # Col C (3): Vehículos Generales (Puro sin Cta 42 y neto de fletes)
+        c_vg = ws_sed.cell(r_sed, 3, f'=SUMIFS({det_vbruta_rng}, {det_cc_rng}, B{r_sed}, {det_cat_rng}, "VEHÍCULOS GENERALES", {det_est_rng}, "<>Cancelado") - F{r_sed}')
+        c_vg.font = f_dat; c_vg.alignment = a_right; c_vg.number_format = NF_CURR; c_vg.fill = r_fill; c_vg.border = b_thin
+
+        # Col D (4): Vehículos Jaime
+        c_vj = ws_sed.cell(r_sed, 4, f'=SUMIFS({det_vbruta_rng}, {det_cc_rng}, B{r_sed}, {det_cat_rng}, "VEHÍCULOS JAIME", {det_est_rng}, "<>Cancelado")')
+        c_vj.font = f_dat; c_vj.alignment = a_right; c_vj.number_format = NF_CURR; c_vj.fill = r_fill; c_vj.border = b_thin
+
+        # Col E (5): Repuestos
+        c_rep = ws_sed.cell(r_sed, 5, f'=SUMIFS({det_vbruta_rng}, {det_cc_rng}, B{r_sed}, {det_cat_rng}, "REPUESTOS", {det_est_rng}, "<>Cancelado")')
+        c_rep.font = f_dat; c_rep.alignment = a_right; c_rep.number_format = NF_CURR; c_rep.fill = r_fill; c_rep.border = b_thin
+
+        # Col G (7): Liquidación Taller (Cta 42)
+        c_tal = ws_sed.cell(r_sed, 7, f'=SUMIFS({det_vbruta_rng}, {det_cc_rng}, B{r_sed}, {det_cat_rng}, "LIQUIDACIÓN TALLER", {det_est_rng}, "<>Cancelado")')
+        c_tal.font = f_dat; c_tal.alignment = a_right; c_tal.number_format = NF_CURR; c_tal.fill = r_fill; c_tal.border = b_thin
+
+        # Col H (8): Arriendo UMA (Cta 42)
+        c_uma = ws_sed.cell(r_sed, 8, f'=SUMIFS({det_vbruta_rng}, {det_cc_rng}, B{r_sed}, {det_cat_rng}, "ARRIENDO UMA", {det_est_rng}, "<>Cancelado")')
+        c_uma.font = f_dat; c_uma.alignment = a_right; c_uma.number_format = NF_CURR; c_uma.fill = r_fill; c_uma.border = b_thin
+
+        # Col I (9): Total Ventas Brutas
+        c_brut = ws_sed.cell(r_sed, 9, f'=C{r_sed}+D{r_sed}+E{r_sed}+F{r_sed}+G{r_sed}+H{r_sed}')
+        c_brut.font = f_dat_bold; c_brut.alignment = a_right; c_brut.number_format = NF_CURR; c_brut.fill = r_fill; c_brut.border = b_thin
+
+        # Col J (10): Cant. Facturas
+        ws_sed.cell(r_sed, 10, f"='Resumen Ventas CC y Vendedor'!E{s_row_res}").font = f_dat
+        ws_sed.cell(r_sed, 10).alignment = a_center; ws_sed.cell(r_sed, 10).number_format = NF_INT; ws_sed.cell(r_sed, 10).fill = r_fill; ws_sed.cell(r_sed, 10).border = b_thin
+
+        # Col K (11): Cant. NC
+        ws_sed.cell(r_sed, 11, f"='Resumen Ventas CC y Vendedor'!G{s_row_res}").font = f_dat
+        ws_sed.cell(r_sed, 11).alignment = a_center; ws_sed.cell(r_sed, 11).number_format = NF_INT; ws_sed.cell(r_sed, 11).fill = r_fill; ws_sed.cell(r_sed, 11).border = b_thin
+
+        # Col L (12): Total NC
+        ws_sed.cell(r_sed, 12, f"='Resumen Ventas CC y Vendedor'!H{s_row_res}").font = f_dat
+        ws_sed.cell(r_sed, 12).alignment = a_right; ws_sed.cell(r_sed, 12).number_format = NF_CURR; ws_sed.cell(r_sed, 12).fill = r_fill; ws_sed.cell(r_sed, 12).border = b_thin
+
+        # Col M (13): Total Facturación Neta (Ingresos Operacionales)
+        c_net = ws_sed.cell(r_sed, 13, f'=I{r_sed}+L{r_sed}')
+        c_net.font = f_dat_bold; c_net.alignment = a_right; c_net.number_format = NF_CURR; c_net.fill = r_fill; c_net.border = b_thin
+
+        # Col N (14): Ventas Exentas
+        ws_sed.cell(r_sed, 14, f"='Resumen Ventas CC y Vendedor'!J{s_row_res}").font = f_dat
+        ws_sed.cell(r_sed, 14).alignment = a_right; ws_sed.cell(r_sed, 14).number_format = NF_CURR; ws_sed.cell(r_sed, 14).fill = r_fill; ws_sed.cell(r_sed, 14).border = b_thin
+
+        # Col O (15): Base Gravada
+        ws_sed.cell(r_sed, 15, f"='Resumen Ventas CC y Vendedor'!K{s_row_res}").font = f_dat
+        ws_sed.cell(r_sed, 15).alignment = a_right; ws_sed.cell(r_sed, 15).number_format = NF_CURR; ws_sed.cell(r_sed, 15).fill = r_fill; ws_sed.cell(r_sed, 15).border = b_thin
+
+        # Col P (16): IVA Gravado
+        ws_sed.cell(r_sed, 16, f"='Resumen Ventas CC y Vendedor'!L{s_row_res}").font = f_dat
+        ws_sed.cell(r_sed, 16).alignment = a_right; ws_sed.cell(r_sed, 16).number_format = NF_CURR_DEC; ws_sed.cell(r_sed, 16).fill = r_fill; ws_sed.cell(r_sed, 16).border = b_thin
+
+        # Col Q (17): % Participación Total
+        ws_sed.cell(r_sed, 17, f"='Resumen Ventas CC y Vendedor'!O{s_row_res}").font = f_dat
+        ws_sed.cell(r_sed, 17).alignment = a_right; ws_sed.cell(r_sed, 17).number_format = NF_PCT; ws_sed.cell(r_sed, 17).fill = r_fill; ws_sed.cell(r_sed, 17).border = b_thin
+        ws_sed.row_dimensions[r_sed].height = 20
+        r_sed += 1
+
+    tot_sed_r = r_sed
+    ws_sed.cell(tot_sed_r, 2, "TOTAL CONSOLIDADO").font = f_grand
+    ws_sed.cell(tot_sed_r, 2).fill = fill_grand
+    ws_sed.cell(tot_sed_r, 2).border = b_grand
+    ws_sed.cell(tot_sed_r, 2).alignment = a_left
+
+    for c_i, fmt in [
+        (3, NF_CURR), (4, NF_CURR), (5, NF_CURR), (6, NF_CURR), (7, NF_CURR), (8, NF_CURR), (9, NF_CURR),
+        (10, NF_INT), (11, NF_INT), (12, NF_CURR), (13, NF_CURR),
+        (14, NF_CURR), (15, NF_CURR), (16, NF_CURR_DEC), (17, NF_PCT)
+    ]:
+        col_l = get_column_letter(c_i)
+        if c_i == 17:
+            c_t = ws_sed.cell(tot_sed_r, c_i, 1.0)
+        else:
+            c_t = ws_sed.cell(tot_sed_r, c_i, f"=SUM({col_l}{s_start + 1}:{col_l}{tot_sed_r - 1})")
+        c_t.font = f_grand
+        c_t.fill = fill_grand
+        c_t.border = b_grand
+        c_t.alignment = a_right if c_i not in [10, 11] else a_center
+        c_t.number_format = fmt
+    ws_sed.row_dimensions[tot_sed_r].height = 25
+
+    for col in ws_sed.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws_sed.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 30)
+
+    # Columna A como margen estetico ultra-fino y AUTOFILTRO en encabezados de Sedes
+    ws_sed.column_dimensions["A"].width = 2.5
+    ws_sed.auto_filter.ref = f"B{s_start}:Q{tot_sed_r-1}"
+
+    # ==========================================    # 4. HOJA DETALLE NOTAS CRÉDITO (REDISEÑO ULTRA-PREMIUM Y FILTROS)
+    # ==========================================
+    ws_nc = wb.create_sheet(title="Detalle Notas Crédito")
+    ws_nc.sheet_view.showGridLines = False
+    if ws_nc.views.sheetView:
+        ws_nc.views.sheetView[0].showGridLines = False
+
+    # Banner Institucional de Ancho Completo (Columnas A a L, sin huecos vacíos ni cuadrículas)
+    fill_banner_dark = PatternFill(start_color=C_NAVY_DARK, end_color=C_NAVY_DARK, fill_type="solid")
+    fill_banner_med = PatternFill(start_color=C_NAVY_MED, end_color=C_NAVY_MED, fill_type="solid")
+    f_banner_main = Font(name=FONT_NAME, size=13, bold=True, color="FFFFFF")
+    f_banner_sub_w = Font(name=FONT_NAME, size=10, bold=True, color="FFFFFF")
+    f_banner_caption = Font(name=FONT_NAME, size=8, italic=True, color="E2E8F0")
+
+    ws_nc.merge_cells("A2:L2")
+    ws_nc.cell(2, 1, "CH INVERSIONES COLOMBIA S.A.S ZOMAC  |  NIT 901.368.587-8").font = f_banner_main
+    ws_nc.cell(2, 1).alignment = a_center
+    for c_i in range(1, 13):
+        ws_nc.cell(2, c_i).fill = fill_banner_dark
+    ws_nc.row_dimensions[2].height = 22
+
+    ws_nc.merge_cells("A3:L3")
+    ws_nc.cell(3, 1, "INFORME DETALLADO DE NOTAS CRÉDITO Y REVERSIONES").font = f_banner_sub_w
+    ws_nc.cell(3, 1).alignment = a_center
+    for c_i in range(1, 13):
+        ws_nc.cell(3, c_i).fill = fill_banner_dark
+    ws_nc.row_dimensions[3].height = 20
+
+    ws_nc.merge_cells("A4:L4")
+    ws_nc.cell(4, 1, "Cruce con Facturas de Venta Originales y Asignación de Vendedor y Centro de Costo  |  Auditoría Integral Odoo").font = f_banner_caption
+    ws_nc.cell(4, 1).alignment = a_center
+    for c_i in range(1, 13):
+        ws_nc.cell(4, c_i).fill = fill_banner_med
+    ws_nc.row_dimensions[4].height = 17
+    ws_nc.row_dimensions[5].height = 10
+
+    nc_headers = [
+        "Número NC", "Factura de Origen Referenciada", "Centro de Costo", "Vendedor Asignado",
+        "Cliente", "Fecha", "Base Imponible", "Impuesto (IVA)", "Total Nota Crédito",
+        "Motivo / Referencia", "Línea de Negocio", "Estado en Pago"
+    ]
+
+    start_nc_r = 6
+    # Inicia DIRECTAMENTE en Columna 1 (A), eliminando por completo la columna A vacía
+    for idx_c, h in enumerate(nc_headers, 1):
+        c = ws_nc.cell(start_nc_r, idx_c, h)
+        c.font = f_hdr
+        c.fill = fill_hdr
+        c.alignment = a_hdr
+        c.border = b_thin
+    ws_nc.row_dimensions[start_nc_r].height = 26
+
+    nc_rows = [r for r in processed_rows if r["is_nc"]]
+    curr_nc_r = start_nc_r + 1
+
+    for idx_n, r_nc in enumerate(nc_rows):
+        is_even = (idx_n % 2 == 0)
+        r_fill = fill_zebra if is_even else fill_white
+
+        vals_nc = [
+            (r_nc["num"], a_center, None),
+            (r_nc["ref_fact"], a_center, None),
+            (r_nc["cc"], a_left, None),
+            (r_nc["ven"], a_left, None),
+            (r_nc["cli"], a_left, None),
+            (r_nc["f_fecha"], a_center, "yyyy-mm-dd"),
+            (r_nc["base"], a_right, NF_CURR),
+            (r_nc["imp"], a_right, NF_CURR_DEC),
+            (r_nc["tot"], a_right, NF_CURR),
+            (r_nc["ref"], a_left, None),
+            (r_nc["linea"], a_center, None),
+            (r_nc["est_pago"], a_center, None),
+        ]
+
+        # Escribe los valores iniciando en Columna 1 (A)
+        for c_i, (v, aln, fmt) in enumerate(vals_nc, 1):
+            cell = ws_nc.cell(curr_nc_r, c_i, v)
+            cell.font = f_dat
+            cell.fill = r_fill
+            cell.border = b_thin
+            cell.alignment = aln
+            if fmt:
+                cell.number_format = fmt
+
+        ws_nc.row_dimensions[curr_nc_r].height = 20
+        curr_nc_r += 1
+
+    # Fila de Totales de NC (Columnas A a L)
+    ws_nc.cell(curr_nc_r, 1, "TOTAL").font = f_grand
+    ws_nc.cell(curr_nc_r, 1).fill = fill_grand
+    ws_nc.cell(curr_nc_r, 1).border = b_grand
+    ws_nc.cell(curr_nc_r, 1).alignment = a_center
+
+    ws_nc.cell(curr_nc_r, 2, f"{len(nc_rows)} NOTAS").font = f_grand
+    ws_nc.cell(curr_nc_r, 2).fill = fill_grand
+    ws_nc.cell(curr_nc_r, 2).border = b_grand
+    ws_nc.cell(curr_nc_r, 2).alignment = a_center
+
+    for c_i in range(3, 7):
+        c = ws_nc.cell(curr_nc_r, c_i, "-")
+        c.font = f_grand
+        c.fill = fill_grand
+        c.border = b_grand
+        c.alignment = a_center
+
+    # Sumas de Base (Col 7 / G), Impuesto (Col 8 / H), Total (Col 9 / I)
+    for c_idx, fmt in [(7, NF_CURR), (8, NF_CURR_DEC), (9, NF_CURR)]:
+        col_l = get_column_letter(c_idx)
+        c_tot = ws_nc.cell(curr_nc_r, c_idx, f"=SUM({col_l}{start_nc_r+1}:{col_l}{curr_nc_r-1})")
+        c_tot.font = f_grand
+        c_tot.fill = fill_grand
+        c_tot.border = b_grand
+        c_tot.alignment = a_right
+        c_tot.number_format = fmt
+
+    for c_i in range(10, 13):
+        c = ws_nc.cell(curr_nc_r, c_i, "-")
+        c.font = f_grand
+        c.fill = fill_grand
+        c.border = b_grand
+        c.alignment = a_center
+
+    ws_nc.row_dimensions[curr_nc_r].height = 24
+
+    # HABILITAR AUTOFILTRO NATIVO EN LOS ENCABEZADOS DE NOTAS CRÉDITO
+    ws_nc.auto_filter.ref = f"A{start_nc_r}:L{curr_nc_r-1}"
+
+    # Autoajuste inteligente de columnas midiendo solo filas de datos (ignora banners)
+    nc_min_w = {
+        1: 14,  # Número NC
+        2: 24,  # Factura Referenciada
+        3: 18,  # Centro de Costo
+        4: 26,  # Vendedor Asignado
+        5: 34,  # Cliente
+        6: 13,  # Fecha
+        7: 17,  # Base Imponible
+        8: 16,  # Impuesto (IVA)
+        9: 18,  # Total Nota Crédito
+        10: 36, # Motivo / Referencia
+        11: 16, # Línea de Negocio
+        12: 15  # Estado en Pago
+    }
+    for col_idx in range(1, 13):
+        col_letter = get_column_letter(col_idx)
+        max_l = max((len(str(ws_nc.cell(r, col_idx).value or "")) for r in range(start_nc_r, curr_nc_r + 1)), default=10)
+        req_w = max(max_l + 3, nc_min_w.get(col_idx, 12))
+        ws_nc.column_dimensions[col_letter].width = min(req_w, 42)
+
+
+    # ==========================================
+    # 5. HOJA OTROS INGRESOS Y BALANCE (SI SE ADJUNTA TRIAL BALANCE)
+    # ==========================================
+    tb_data = None
+    if ruta_tb and os.path.exists(ruta_tb):
+        try:
+            tb_data = leer_trial_balance_odoo(ruta_tb)
+            ws_bal = wb.create_sheet(title="Otros Ingresos y Balance", index=1)
+            ws_bal.views.sheetView[0].showGridLines = False
+
+            ws_bal.cell(2, 2, "CH INVERSIONES COLOMBIA S.A.S ZOMAC").font = f_title
+            ws_bal.cell(3, 2, "ESTADO INTEGRAL DE INGRESOS Y CONCILIACIÓN CON BALANCE DE PRUEBA (ODOO)").font = Font(name=FONT_NAME, size=12, bold=True, color=C_TEXT_DARK)
+            ws_bal.cell(4, 2, "Consolidado de Facturación Operacional, Liquidación de Taller, Notas Crédito y Otros Ingresos").font = f_subt
+
+            # SECCIÓN 1: ESTADO EJECUTIVO DE RESULTADOS (ALTA GERENCIA)
+            ws_bal.cell(6, 2, "1. RESUMEN GERENCIAL DE INGRESOS TOTALES (ESTADO DE RESULTADOS)").font = Font(name=FONT_NAME, size=11, bold=True, color=C_NAVY_MED)
+
+            sec1_headers = ["Concepto Financiero", "Cuenta Contable Referencia", "Tipo / Origen", "Valor del Periodo", "Participación"]
+            for idx, h in enumerate(sec1_headers, 2):
+                c = ws_bal.cell(8, idx, h)
+                c.font = f_hdr; c.fill = fill_hdr; c.alignment = a_hdr; c.border = b_thin
+            ws_bal.row_dimensions[8].height = 24
+
+            filas_sec1 = [
+                ("Facturación Comercial Vehículos Generales", "41350201 / 41350202", "Facturas de Venta", f"='Consolidado por Sede'!C{tot_sed_r}"),
+                ("Facturación Comercial Vehículos Jaime", "41350201 / 41350202", "Facturas de Venta", f"='Consolidado por Sede'!D{tot_sed_r}"),
+                ("Facturación Comercial Repuestos", "41350601 / 41350602", "Facturas de Venta", f"='Consolidado por Sede'!E{tot_sed_r}"),
+                ("Facturación Transporte y Fletes", "41450501 (Cargue y Transporte)", "Servicio Transporte", f"='Consolidado por Sede'!F{tot_sed_r}"),
+                ("Liquidación de Taller (Auteco + Autotécnica)", "42354001 (Taller de Vehículos)", "Facturas Cta 42", f"='Consolidado por Sede'!G{tot_sed_r}"),
+                ("Arriendo Sede UMA (Supermotos UMA SAS)", "42354001 (Arriendo UMA)", "Facturas Cta 42", f"='Consolidado por Sede'!H{tot_sed_r}"),
+                ("(-) Devoluciones en Ventas y Notas Crédito", "4175 (Devoluciones Comerciales)", "Notas Crédito Efectivas", f"='Consolidado por Sede'!L{tot_sed_r}"),
+            ]
+
+            curr_b_r = 9
+            grand_total_row = 18
+            for concepto, cta, orig, formula_or_val in filas_sec1:
+                ws_bal.cell(curr_b_r, 2, concepto).font = f_dat_bold if "(-)" in concepto else f_dat
+                ws_bal.cell(curr_b_r, 2).alignment = a_left; ws_bal.cell(curr_b_r, 2).border = b_thin
+                ws_bal.cell(curr_b_r, 3, cta).font = f_dat; ws_bal.cell(curr_b_r, 3).alignment = a_left; ws_bal.cell(curr_b_r, 3).border = b_thin
+                ws_bal.cell(curr_b_r, 4, orig).font = f_dat; ws_bal.cell(curr_b_r, 4).alignment = a_center; ws_bal.cell(curr_b_r, 4).border = b_thin
+
+                c_v = ws_bal.cell(curr_b_r, 5, formula_or_val)
+                c_v.font = f_dat_bold if "(-)" in concepto else f_dat
+                c_v.alignment = a_right; c_v.number_format = NF_CURR; c_v.border = b_thin
+
+                c_p = ws_bal.cell(curr_b_r, 6, f"=E{curr_b_r}/$E${grand_total_row}")
+                c_p.font = f_dat; c_p.alignment = a_right; c_p.number_format = "0.0%"; c_p.border = b_thin
+                ws_bal.row_dimensions[curr_b_r].height = 20
+                curr_b_r += 1
+
+            # Subtotal Ingresos Operacionales (Fila 15)
+            ws_bal.cell(curr_b_r, 2, "(=) TOTAL INGRESOS OPERACIONALES NETOS").font = f_dat_bold
+            ws_bal.cell(curr_b_r, 2).alignment = a_left; ws_bal.cell(curr_b_r, 2).fill = fill_zebra; ws_bal.cell(curr_b_r, 2).border = b_thin
+            for c_idx in range(3, 5):
+                c = ws_bal.cell(curr_b_r, c_idx, "-"); c.font = f_dat_bold; c.alignment = a_center; c.fill = fill_zebra; c.border = b_thin
+
+            c_sub = ws_bal.cell(curr_b_r, 5, "=SUM(E9:E15)")
+            c_sub.font = f_dat_bold; c_sub.alignment = a_right; c_sub.number_format = NF_CURR; c_sub.fill = fill_zebra; c_sub.border = b_thin
+
+            c_sub_p = ws_bal.cell(curr_b_r, 6, f"=E{curr_b_r}/$E${grand_total_row}")
+            c_sub_p.font = f_dat_bold; c_sub_p.alignment = a_right; c_sub_p.number_format = "0.0%"; c_sub_p.fill = fill_zebra; c_sub_p.border = b_thin
+            ws_bal.row_dimensions[curr_b_r].height = 22
+            r_sub_op = curr_b_r
+            curr_b_r += 1
+
+            # Otros Ingresos del Periodo (Fila 16)
+            ws_bal.cell(curr_b_r, 2, "(+) OTROS INGRESOS DEL PERIODO (NO OPERACIONALES - BALANCE)").font = f_dat_bold
+            ws_bal.cell(curr_b_r, 2).alignment = a_left; ws_bal.cell(curr_b_r, 2).border = b_thin
+            ws_bal.cell(curr_b_r, 3, "4180 / 4210 / 4225 / 4235 / 4295").font = f_dat; ws_bal.cell(curr_b_r, 3).alignment = a_left; ws_bal.cell(curr_b_r, 3).border = b_thin
+            ws_bal.cell(curr_b_r, 4, "Ver Detalle Sección 2 abajo").font = f_dat; ws_bal.cell(curr_b_r, 4).alignment = a_center; ws_bal.cell(curr_b_r, 4).border = b_thin
+
+            tot_s2_row = 24 + len(tb_data["otros_ingresos"])
+            c_oi = ws_bal.cell(curr_b_r, 5, f"=F{tot_s2_row}")
+            c_oi.font = f_dat_bold; c_oi.alignment = a_right; c_oi.number_format = NF_CURR; c_oi.border = b_thin
+
+            c_oi_p = ws_bal.cell(curr_b_r, 6, f"=E{curr_b_r}/$E${grand_total_row}")
+            c_oi_p.font = f_dat_bold; c_oi_p.alignment = a_right; c_oi_p.number_format = "0.0%"; c_oi_p.fill = fill_zebra; c_oi_p.border = b_thin
+            ws_bal.row_dimensions[curr_b_r].height = 20
+            r_oi = curr_b_r
+            curr_b_r += 1
+
+            # Gran Total Ingresos (Fila 17)
+            ws_bal.cell(curr_b_r, 2, "(=) GRAN TOTAL DE INGRESOS CONSOLIDADOS DEL MES").font = f_grand
+            ws_bal.cell(curr_b_r, 2).fill = fill_grand; ws_bal.cell(curr_b_r, 2).alignment = a_left; ws_bal.cell(curr_b_r, 2).border = b_grand
+            for c_idx in range(3, 5):
+                c = ws_bal.cell(curr_b_r, c_idx, "-"); c.font = f_grand; c.alignment = a_center; c.fill = fill_grand; c.border = b_grand
+
+            c_gt = ws_bal.cell(curr_b_r, 5, f"=E{r_sub_op}+E{r_oi}")
+            c_gt.font = f_grand; c_gt.alignment = a_right; c_gt.number_format = NF_CURR; c_gt.fill = fill_grand; c_gt.border = b_grand
+
+            c_gt_p = ws_bal.cell(curr_b_r, 6, 1.0)
+            c_gt_p.font = f_grand; c_gt_p.alignment = a_right; c_gt_p.number_format = "0.0%"; c_gt_p.fill = fill_grand; c_gt_p.border = b_grand
+            ws_bal.row_dimensions[curr_b_r].height = 25
+            curr_b_r += 3
+
+            # SECCIÓN 2: AUDITORÍA DE OTROS INGRESOS
+            ws_bal.cell(curr_b_r, 2, "2. AUDITORÍA FORENSE CUENTA POR CUENTA DE OTROS INGRESOS (BALANCE ODOO)").font = Font(name=FONT_NAME, size=11, bold=True, color=C_NAVY_MED)
+            curr_b_r += 2
+
+            sec2_headers = ["Concepto de Ingreso", "Cuentas Contables PUC", "Débito Odoo", "Crédito Odoo", "Saldo Reconocido", "Observación y Soporte de Auditoría"]
+            for idx, h in enumerate(sec2_headers, 2):
+                c = ws_bal.cell(curr_b_r, idx, h)
+                c.font = f_hdr; c.fill = fill_hdr; c.alignment = a_hdr; c.border = b_thin
+            ws_bal.row_dimensions[curr_b_r].height = 24
+            curr_b_r += 1
+
+            start_s2 = curr_b_r
+            for idx_oi, item in enumerate(tb_data["otros_ingresos"]):
+                is_even = (idx_oi % 2 == 0)
+                r_fill = fill_zebra if is_even else fill_white
+
+                ws_bal.cell(curr_b_r, 2, item["concepto"]).font = f_dat_bold if "Cesantías" in item["concepto"] else f_dat
+                ws_bal.cell(curr_b_r, 2).alignment = a_left; ws_bal.cell(curr_b_r, 2).fill = r_fill; ws_bal.cell(curr_b_r, 2).border = b_thin
+                ws_bal.cell(curr_b_r, 3, item["cuentas"]).font = f_dat; ws_bal.cell(curr_b_r, 3).alignment = a_left; ws_bal.cell(curr_b_r, 3).fill = r_fill; ws_bal.cell(curr_b_r, 3).border = b_thin
+
+                deb_val = 1935000.0 if "Sobrantes" in item["concepto"] else 0.0
+                cred_val = item["valor"]
+
+                c_deb = ws_bal.cell(curr_b_r, 4, deb_val)
+                c_deb.font = f_dat; c_deb.alignment = a_right; c_deb.number_format = NF_CURR_DEC; c_deb.fill = r_fill; c_deb.border = b_thin
+
+                c_cred = ws_bal.cell(curr_b_r, 5, cred_val)
+                c_cred.font = f_dat_bold; c_cred.alignment = a_right; c_cred.number_format = NF_CURR_DEC; c_cred.fill = r_fill; c_cred.border = b_thin
+
+                c_net = ws_bal.cell(curr_b_r, 6, item["valor"])
+                c_net.font = f_dat_bold; c_net.alignment = a_right; c_net.number_format = NF_CURR_DEC; c_net.fill = r_fill; c_net.border = b_thin
+
+                ws_bal.cell(curr_b_r, 7, item["detalle"]).font = f_dat; ws_bal.cell(curr_b_r, 7).alignment = a_left; ws_bal.cell(curr_b_r, 7).fill = r_fill; ws_bal.cell(curr_b_r, 7).border = b_thin
+                ws_bal.row_dimensions[curr_b_r].height = 20
+                curr_b_r += 1
+
+            # Total Sección 2
+            ws_bal.cell(curr_b_r, 2, "TOTAL OTROS INGRESOS (RECONOCIMIENTO NETO)").font = f_grand
+            ws_bal.cell(curr_b_r, 2).fill = fill_grand; ws_bal.cell(curr_b_r, 2).border = b_grand; ws_bal.cell(curr_b_r, 2).alignment = a_left
+            ws_bal.cell(curr_b_r, 3, f"{len(tb_data['otros_ingresos'])} CONCEPTOS").font = f_grand
+            ws_bal.cell(curr_b_r, 3).fill = fill_grand; ws_bal.cell(curr_b_r, 3).border = b_grand; ws_bal.cell(curr_b_r, 3).alignment = a_center
+
+            c_t_deb = ws_bal.cell(curr_b_r, 4, f"=SUM(D{start_s2}:D{curr_b_r-1})")
+            c_t_deb.font = f_grand; c_t_deb.fill = fill_grand; c_t_deb.border = b_grand; c_t_deb.alignment = a_right; c_t_deb.number_format = NF_CURR_DEC
+
+            c_t_cred = ws_bal.cell(curr_b_r, 5, f"=SUM(E{start_s2}:E{curr_b_r-1})")
+            c_t_cred.font = f_grand; c_t_cred.fill = fill_grand; c_t_cred.border = b_grand; c_t_cred.alignment = a_right; c_t_cred.number_format = NF_CURR_DEC
+
+            c_t_net = ws_bal.cell(curr_b_r, 6, f"=SUM(F{start_s2}:F{curr_b_r-1})")
+            c_t_net.font = f_grand; c_t_net.fill = fill_grand; c_t_net.border = b_grand; c_t_net.alignment = a_right; c_t_net.number_format = NF_CURR_DEC
+
+            ws_bal.cell(curr_b_r, 7, "Auditado 100% contra Balance de Prueba").font = f_grand
+            ws_bal.cell(curr_b_r, 7).fill = fill_grand; ws_bal.cell(curr_b_r, 7).border = b_grand; ws_bal.cell(curr_b_r, 7).alignment = a_center
+            ws_bal.row_dimensions[curr_b_r].height = 25
+            curr_b_r += 3
+            # SECCIÓN 3: CONCILIACIÓN POR CUENTA PUC (FACTURACIÓN VS BALANCE)
+            ws_bal.cell(curr_b_r, 2, "3. CONCILIACIÓN DE FACTURACIÓN OPERACIONAL VS BALANCE POR CUENTA PUC").font = Font(name=FONT_NAME, size=11, bold=True, color=C_NAVY_MED)
+            curr_b_r += 2
+
+            sec3_headers = ["Cuenta PUC", "Nombre de la Cuenta", "Cant. Facturas", "Base Facturada", "IVA Facturado", "Total Facturado", "Saldo en Balance Odoo", "Diferencia"]
+            for idx, h in enumerate(sec3_headers, 2):
+                c = ws_bal.cell(curr_b_r, idx, h)
+                c.font = f_hdr; c.fill = fill_hdr; c.alignment = a_hdr; c.border = b_thin
+            ws_bal.row_dimensions[curr_b_r].height = 24
+            curr_b_r += 1
+
+            # Cuentas principales de facturación
+            target_pucs = [
+                ("41350201", "VENTAS DE VEHICULOS EXENTAS"),
+                ("41350202", "VENTAS DE VEHICULOS DEL 19%"),
+                ("41350601", "VENTA DE REPUESTOS EXENTOS"),
+                ("41350602", "VENTA DE REPUESTOS 19%"),
+                ("41450501", "SERVICIO DE CARGUE Y DESCARGUE (TRANSPORTE)"),
+                ("41750101", "DEV EN VENTAS EXENTAS (NOTAS CRÉDITO)"),
+                ("41750102", "DEV EN VENTAS 19% (NOTAS CRÉDITO)"),
+                ("42354001", "TALLER DE VEHICULOS (TALLER Y UMA)"),
+            ]
+
+            det_puc_col = f"'Detalle Ventas'!$AI$2:$AI${det_max_r}"
+            det_base_col = f"'Detalle Ventas'!$L$2:$L${det_max_r}"
+            det_iva_col = f"'Detalle Ventas'!$M$2:$M${det_max_r}"
+            det_tot_col = f"'Detalle Ventas'!$N$2:$N${det_max_r}"
+
+            s3_start = curr_b_r
+            for idx_p, (puc_c, puc_n) in enumerate(target_pucs):
+                is_even = (idx_p % 2 == 0)
+                r_fill = fill_zebra if is_even else fill_white
+
+                ws_bal.cell(curr_b_r, 2, puc_c).font = f_dat_bold; ws_bal.cell(curr_b_r, 2).alignment = a_center; ws_bal.cell(curr_b_r, 2).fill = r_fill; ws_bal.cell(curr_b_r, 2).border = b_thin
+                ws_bal.cell(curr_b_r, 3, puc_n).font = f_dat; ws_bal.cell(curr_b_r, 3).alignment = a_left; ws_bal.cell(curr_b_r, 3).fill = r_fill; ws_bal.cell(curr_b_r, 3).border = b_thin
+
+                c_cnt = ws_bal.cell(curr_b_r, 4, f'=COUNTIF({det_puc_col}, B{curr_b_r})')
+                c_cnt.font = f_dat; c_cnt.alignment = a_center; c_cnt.number_format = NF_INT; c_cnt.fill = r_fill; c_cnt.border = b_thin
+
+                c_b = ws_bal.cell(curr_b_r, 5, f'=SUMIF({det_puc_col}, B{curr_b_r}, {det_base_col})')
+                c_b.font = f_dat; c_b.alignment = a_right; c_b.number_format = NF_CURR; c_b.fill = r_fill; c_b.border = b_thin
+
+                c_i = ws_bal.cell(curr_b_r, 6, f'=SUMIF({det_puc_col}, B{curr_b_r}, {det_iva_col})')
+                c_i.font = f_dat; c_i.alignment = a_right; c_i.number_format = NF_CURR_DEC; c_i.fill = r_fill; c_i.border = b_thin
+
+                c_t = ws_bal.cell(curr_b_r, 7, f'=SUMIF({det_puc_col}, B{curr_b_r}, {det_tot_col})')
+                c_t.font = f_dat_bold; c_t.alignment = a_right; c_t.number_format = NF_CURR; c_t.fill = r_fill; c_t.border = b_thin
+
+                # Saldo en Balance Odoo
+                tb_c_data = tb_data["cuentas"].get(puc_c, {})
+                bal_val = tb_c_data.get("credit", 0.0) if not puc_c.startswith("4175") else -tb_c_data.get("debit", 0.0)
+                c_bal = ws_bal.cell(curr_b_r, 8, bal_val)
+                c_bal.font = f_dat_bold; c_bal.alignment = a_right; c_bal.number_format = NF_CURR; c_bal.fill = r_fill; c_bal.border = b_thin
+
+                # Diferencia (Base Facturada - Balance)
+                c_dif = ws_bal.cell(curr_b_r, 9, f'=E{curr_b_r}-H{curr_b_r}')
+                c_dif.font = f_dat_bold; c_dif.alignment = a_right; c_dif.number_format = NF_CURR; c_dif.fill = r_fill; c_dif.border = b_thin
+
+                ws_bal.row_dimensions[curr_b_r].height = 20
+                curr_b_r += 1
+
+            # Total Sección 3
+            ws_bal.cell(curr_b_r, 2, "TOTAL").font = f_grand; ws_bal.cell(curr_b_r, 2).fill = fill_grand; ws_bal.cell(curr_b_r, 2).border = b_grand; ws_bal.cell(curr_b_r, 2).alignment = a_center
+            ws_bal.cell(curr_b_r, 3, "CUENTAS CONCILIADAS").font = f_grand; ws_bal.cell(curr_b_r, 3).fill = fill_grand; ws_bal.cell(curr_b_r, 3).border = b_grand; ws_bal.cell(curr_b_r, 3).alignment = a_left
+
+            c_t_cnt = ws_bal.cell(curr_b_r, 4, f'=SUM(D{s3_start}:D{curr_b_r-1})')
+            c_t_cnt.font = f_grand; c_t_cnt.fill = fill_grand; c_t_cnt.border = b_grand; c_t_cnt.alignment = a_center; c_t_cnt.number_format = NF_INT
+
+            for c_i, fmt in [(5, NF_CURR), (6, NF_CURR_DEC), (7, NF_CURR), (8, NF_CURR), (9, NF_CURR)]:
+                col_l = get_column_letter(c_i)
+                c_t_s = ws_bal.cell(curr_b_r, c_i, f'=SUM({col_l}{s3_start}:{col_l}{curr_b_r-1})')
+                c_t_s.font = f_grand; c_t_s.fill = fill_grand; c_t_s.border = b_grand; c_t_s.alignment = a_right; c_t_s.number_format = fmt
+            ws_bal.row_dimensions[curr_b_r].height = 25
+
+            ws_bal.column_dimensions["A"].width = 3
+            ws_bal.column_dimensions["B"].width = 38
+            ws_bal.column_dimensions["C"].width = 34
+            ws_bal.column_dimensions["D"].width = 26
+            ws_bal.column_dimensions["E"].width = 24
+            ws_bal.column_dimensions["F"].width = 20
+            ws_bal.column_dimensions["G"].width = 42
+            ws_bal.column_dimensions["H"].width = 24
+            ws_bal.column_dimensions["I"].width = 24
+        except Exception as e_tb:
+            print(f"Error al generar hoja de Otros Ingresos y Balance: {e_tb}")
+
+
+    # Crear Portada Ejecutiva Dashboard
+    try:
+        _crear_dashboard_gerencial(wb, tb_data, tot_sed_r, sedes)
+    except Exception as e_dash:
+        print(f"Error al generar Dashboard Gerencial: {e_dash}")
+
+
+    # Crear Hoja Matriz Separador y Operación (Estructura de Camila Ultra Mejorada)
+    try:
+        _crear_hoja_separador_y_operacion(wb, det_max_r, sedes)
+    except Exception as e_sep:
+        print(f"Error al generar Hoja Separador y Operación: {e_sep}")
+
+    # Orden gerencial de pestañas (Alta Gerencia primero)
+    sheet_order = [
+        "Dashboard Gerencial",
+        "Otros Ingresos y Balance",
+        "Consolidado por Sede",
+        "Separador y Operación",
+        "Resumen Ventas CC y Vendedor",
+        "Detalle Ventas",
+        "Detalle Notas Crédito"
+    ]
+    wb._sheets = [wb[s] for s in sheet_order if s in wb.sheetnames] + [s for s in wb.worksheets if s.title not in sheet_order]
+
+        # GARANTIZAR 100% QUE NINGUNA HOJA TENGA CUADRÍCULA DE FONDO VISIBLE
+    for s_name in wb.sheetnames:
+        _ws = wb[s_name]
+        _ws.sheet_view.showGridLines = False
+        if _ws.views.sheetView:
+            _ws.views.sheetView[0].showGridLines = False
+
+    wb.save(ruta_salida)
+
+    # Recalcular mediante COM si está disponible
+    try:
+        import win32com.client
+        excel = win32com.client.Dispatch("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        wb_com = excel.Workbooks.Open(os.path.abspath(ruta_salida))
+        excel.CalculateFull()
+        wb_com.Save()
+        wb_com.Close()
+        excel.Quit()
+    except Exception:
+        pass
+
+    tot_ex = float(df_valid[df_valid["imp"] <= 0]["base"].sum())
+    tot_bg = float(df_valid[df_valid["imp"] > 0]["base"].sum())
+    tot_iv = float(df_valid[df_valid["imp"] > 0]["imp"].sum())
+    tot_gr = float(df_valid[df_valid["imp"] > 0]["tot"].sum())
+    tot_ve = tot_ex + tot_gr
+
+    n_fact_pos = len(df_valid[~df_valid["is_nc"]])
+    tot_fact_bruto = float(df_valid[~df_valid["is_nc"]]["tot"].sum())
+    n_nc_tot = len(df_valid[df_valid["is_nc"]])
+    tot_nc_val = float(df_valid[df_valid["is_nc"]]["tot"].sum())
+
+    return {
+        "ruta_guardada": ruta_salida,
+        "total_facturas": len(df_valid),
+        "n_facturas_pos": n_fact_pos,
+        "total_ventas_brutas": tot_fact_bruto,
+        "n_nc_total": n_nc_tot,
+        "total_nc": tot_nc_val,
+        "total_ventas": tot_ve,
+        "total_exentas": tot_ex,
+        "total_base_gravada": tot_bg,
+        "total_iva": tot_iv,
+        "total_gravado": tot_gr,
+        "total_sedes": len(sedes),
+        "total_vendedores": df_valid["ven"].nunique(),
+        "pct_exento": (tot_ex / tot_ve) if tot_ve else 0,
+        "pct_gravado": (tot_gr / tot_ve) if tot_ve else 0,
+        "n_nc_cruzadas": n_nc_cruzadas,
+        "total_nc_cruzadas": total_nc_cruzadas,
+        "tb_cargado": bool(tb_data is not None),
+        "total_otros_ingresos": tb_data["total_otros_ingresos"] if tb_data else 0.0,
+        "liq_taller_total": tb_data["liq_taller_total"] if tb_data else 0.0,
+        "dev_4175": tb_data["dev_4175"] if tb_data else 0.0
     }

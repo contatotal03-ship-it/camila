@@ -2,17 +2,31 @@ import os
 from PyQt6.QtWidgets import (  # type: ignore
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QTextEdit, QFileDialog, QMessageBox, QFrame,
-    QGraphicsDropShadowEffect
+    QGraphicsDropShadowEffect, QDialog, QListWidget, QGroupBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize  # type: ignore
 from PyQt6.QtGui import QFont, QColor  # type: ignore
 
 try:
-    from core.vendedores_logic import procesar_dashboard_vendedores, procesar_dashboard_nc_asiento  # type: ignore
+    from core.vendedores_logic import (  # type: ignore
+        procesar_dashboard_vendedores,
+        procesar_dashboard_nc_asiento,
+        procesar_informe_ventas_asiento,
+        _leer_excel_inteligente,
+        cargar_config_vendedores,
+        guardar_config_vendedores
+    )
 except ImportError:
     import sys
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from core.vendedores_logic import procesar_dashboard_vendedores, procesar_dashboard_nc_asiento  # type: ignore
+    from core.vendedores_logic import (  # type: ignore
+        procesar_dashboard_vendedores,
+        procesar_dashboard_nc_asiento,
+        procesar_informe_ventas_asiento,
+        _leer_excel_inteligente,
+        cargar_config_vendedores,
+        guardar_config_vendedores
+    )
 
 
 CARD_STYLE = (
@@ -59,6 +73,242 @@ PLACEHOLDER_STYLE = (
 )
 
 
+class ConfigVendedoresDialog(QDialog):
+    """Diálogo modal para configurar qué vendedores pertenecen a Repuestos y a Vehículos Jaime en tiempo real."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configuración de Vendedores Especiales")
+        self.setMinimumSize(700, 530)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0b131b;
+                color: #e2e8f0;
+            }
+            QGroupBox {
+                border: 1px solid #1e293b;
+                border-radius: 8px;
+                margin-top: 14px;
+                font-weight: bold;
+                color: #38bdf8;
+                padding: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 4px;
+            }
+            QListWidget {
+                background-color: #111d29;
+                border: 1px solid #1e293b;
+                border-radius: 6px;
+                color: #f1f5f9;
+                font-size: 12px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                padding: 6px;
+                border-radius: 4px;
+            }
+            QListWidget::item:selected {
+                background-color: #0284c7;
+                color: #ffffff;
+            }
+            QLineEdit {
+                background-color: #111d29;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                color: #ffffff;
+                padding: 6px 10px;
+                font-size: 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #38bdf8;
+            }
+            QPushButton {
+                background-color: #1e293b;
+                border: 1px solid #334155;
+                color: #e2e8f0;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+                color: #38bdf8;
+            }
+            QPushButton#btnGuardar {
+                background-color: #059669;
+                border: 1px solid #10b981;
+                color: #ffffff;
+                font-weight: bold;
+            }
+            QPushButton#btnGuardar:hover {
+                background-color: #10b981;
+            }
+            QPushButton#btnEliminar {
+                background-color: #450a0a;
+                border: 1px solid #991b1b;
+                color: #fca5a5;
+            }
+            QPushButton#btnEliminar:hover {
+                background-color: #991b1b;
+                color: #ffffff;
+            }
+        """)
+        self.init_ui()
+        self.cargar_datos()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(14)
+
+        header_lbl = QLabel("⚙️ Reglas de Clasificación de Vendedores en Tiempo Real")
+        header_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #38bdf8;")
+        sub_lbl = QLabel(
+            "Configura qué vendedores se agrupan en las columnas exclusivas de 'REPUESTOS' o 'VEHÍCULOS JAIME'.\n"
+            "Todos los cambios se aplican de inmediato en los informes por Centro de Costo (Sede)."
+        )
+        sub_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        sub_lbl.setWordWrap(True)
+        layout.addWidget(header_lbl)
+        layout.addWidget(sub_lbl)
+
+        # Contenedor de dos columnas
+        cols_layout = QHBoxLayout()
+        cols_layout.setSpacing(16)
+
+        # Columna 1: REPUESTOS
+        grp_rep = QGroupBox("🛠️ Vendedores de REPUESTOS")
+        rep_layout = QVBoxLayout(grp_rep)
+        self.list_rep = QListWidget()
+        rep_layout.addWidget(self.list_rep)
+
+        add_rep_layout = QHBoxLayout()
+        self.txt_rep = QLineEdit()
+        self.txt_rep.setPlaceholderText("Nombre del vendedor...")
+        btn_add_rep = QPushButton("➕ Agregar")
+        btn_add_rep.clicked.connect(self.agregar_repuesto)
+        self.txt_rep.returnPressed.connect(self.agregar_repuesto)
+        add_rep_layout.addWidget(self.txt_rep)
+        add_rep_layout.addWidget(btn_add_rep)
+        rep_layout.addLayout(add_rep_layout)
+
+        btn_del_rep = QPushButton("🗑️ Eliminar Seleccionado")
+        btn_del_rep.setObjectName("btnEliminar")
+        btn_del_rep.clicked.connect(lambda: self.eliminar_item(self.list_rep))
+        rep_layout.addWidget(btn_del_rep)
+        cols_layout.addWidget(grp_rep)
+
+        # Columna 2: VEHÍCULOS JAIME
+        grp_jaime = QGroupBox("🚗 Vendedores VEHÍCULOS JAIME")
+        jaime_layout = QVBoxLayout(grp_jaime)
+        self.list_jaime = QListWidget()
+        jaime_layout.addWidget(self.list_jaime)
+
+        add_jaime_layout = QHBoxLayout()
+        self.txt_jaime = QLineEdit()
+        self.txt_jaime.setPlaceholderText("Nombre del vendedor...")
+        btn_add_jaime = QPushButton("➕ Agregar")
+        btn_add_jaime.clicked.connect(self.agregar_jaime)
+        self.txt_jaime.returnPressed.connect(self.agregar_jaime)
+        add_jaime_layout.addWidget(self.txt_jaime)
+        add_jaime_layout.addWidget(btn_add_jaime)
+        jaime_layout.addLayout(add_jaime_layout)
+
+        btn_del_jaime = QPushButton("🗑️ Eliminar Seleccionado")
+        btn_del_jaime.setObjectName("btnEliminar")
+        btn_del_jaime.clicked.connect(lambda: self.eliminar_item(self.list_jaime))
+        jaime_layout.addWidget(btn_del_jaime)
+        cols_layout.addWidget(grp_jaime)
+
+        layout.addLayout(cols_layout)
+
+        # Botonera Inferior
+        bottom_layout = QHBoxLayout()
+        btn_reset = QPushButton("🔄 Restaurar Predeterminados")
+        btn_reset.setToolTip("Restaurar lista por defecto (Mailyn y Liliana en Repuestos; Jaime Orozco en Vehículos Jaime)")
+        btn_reset.clicked.connect(self.restaurar_defaults)
+        bottom_layout.addWidget(btn_reset)
+
+        bottom_layout.addStretch()
+
+        btn_cancelar = QPushButton("Cancelar")
+        btn_cancelar.clicked.connect(self.reject)
+        bottom_layout.addWidget(btn_cancelar)
+
+        btn_guardar = QPushButton("💾 Guardar y Aplicar")
+        btn_guardar.setObjectName("btnGuardar")
+        btn_guardar.clicked.connect(self.guardar)
+        bottom_layout.addWidget(btn_guardar)
+
+        layout.addLayout(bottom_layout)
+
+    def cargar_datos(self):
+        cfg = cargar_config_vendedores()
+        self.list_rep.clear()
+        for v in cfg.get("vendedores_repuestos", []):
+            self.list_rep.addItem(v.strip().upper())
+
+        self.list_jaime.clear()
+        for v in cfg.get("vendedores_vehiculos_jaime", []):
+            self.list_jaime.addItem(v.strip().upper())
+
+    def agregar_repuesto(self):
+        nom = self.txt_rep.text().strip().upper()
+        if nom:
+            items = [self.list_rep.item(i).text() for i in range(self.list_rep.count())]
+            if nom not in items:
+                self.list_rep.addItem(nom)
+            self.txt_rep.clear()
+
+    def agregar_jaime(self):
+        nom = self.txt_jaime.text().strip().upper()
+        if nom:
+            items = [self.list_jaime.item(i).text() for i in range(self.list_jaime.count())]
+            if nom not in items:
+                self.list_jaime.addItem(nom)
+            self.txt_jaime.clear()
+
+    def eliminar_item(self, list_widget):
+        for item in list_widget.selectedItems():
+            list_widget.takeItem(list_widget.row(item))
+
+    def restaurar_defaults(self):
+        res = QMessageBox.question(
+            self, "Confirmar restauración",
+            "¿Desea restaurar los vendedores predeterminados?\n\n"
+            "• Repuestos: MAILYN YORGELY CONTRERAS CARDENAS, LILIANA DEL PILAR MENDOZA GUEVARA\n"
+            "• Vehículos Jaime: JAIME EDUARDO  OROZCO CHAVARRO",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if res == QMessageBox.StandardButton.Yes:
+            self.list_rep.clear()
+            self.list_rep.addItem("MAILYN YORGELY CONTRERAS CARDENAS")
+            self.list_rep.addItem("LILIANA DEL PILAR MENDOZA GUEVARA")
+
+            self.list_jaime.clear()
+            self.list_jaime.addItem("JAIME EDUARDO  OROZCO CHAVARRO")
+
+    def guardar(self):
+        reps = [self.list_rep.item(i).text().strip().upper() for i in range(self.list_rep.count()) if self.list_rep.item(i).text().strip()]
+        jaimes = [self.list_jaime.item(i).text().strip().upper() for i in range(self.list_jaime.count()) if self.list_jaime.item(i).text().strip()]
+
+        nueva_cfg = {
+            "vendedores_repuestos": reps,
+            "vendedores_vehiculos_jaime": jaimes
+        }
+        if guardar_config_vendedores(nueva_cfg):
+            QMessageBox.information(
+                self, "Configuración Guardada",
+                "Las reglas de clasificación de vendedores se han guardado y aplicado correctamente."
+            )
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", "No se pudo guardar la configuración.")
+
+
 class VendedorWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
@@ -97,14 +347,39 @@ class NotasCreditoWorker(QThread):
             self.error.emit(str(e))
 
 
+class InformeVentasWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, ruta_archivo, ruta_salida, ruta_asiento_nc=None, ruta_tb=None):
+        super().__init__()
+        self.ruta_archivo = ruta_archivo
+        self.ruta_salida = ruta_salida
+        self.ruta_asiento_nc = ruta_asiento_nc
+        self.ruta_tb = ruta_tb
+
+    def run(self):
+        try:
+            stats = procesar_informe_ventas_asiento(
+                self.ruta_archivo, self.ruta_salida,
+                ruta_asiento_nc=self.ruta_asiento_nc,
+                ruta_tb=self.ruta_tb
+            )
+            self.finished.emit(stats)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class VendedoresWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.ruta_archivo = ""
         self.ruta_salida = ""
+        self.ruta_salida_ventas = ""
         self.ruta_asiento_nc = ""
         self.ruta_salida_nc = ""
         self.ruta_dian = ""
+        self.ruta_tb = ""
         self.init_ui()
 
     def init_ui(self):
@@ -140,7 +415,7 @@ class VendedoresWidget(QWidget):
 
         # Description
         desc_lbl = QLabel(
-            "Selecciona el archivo 'Pedido de venta (sale.order).xlsx' desde cualquier ubicacion"
+            "Selecciona el archivo de Ventas ('informe ventas.xlsx' / Asiento Contable o 'Pedido de venta.xlsx')"
         )
         desc_lbl.setStyleSheet("color: #6a8090; font-size: 12px;")
         desc_lbl.setWordWrap(True)
@@ -155,7 +430,7 @@ class VendedoresWidget(QWidget):
         self.file_path = QLineEdit()
         self.file_path.setReadOnly(True)
         self.file_path.setPlaceholderText(
-            "Ningun archivo seleccionado..."
+            "Asiento Contable de Ventas o Pedido de Venta..."
         )
         self.file_path.setMinimumHeight(42)
 
@@ -212,6 +487,25 @@ class VendedoresWidget(QWidget):
         dian_row.addWidget(self.dian_file_btn)
         input_card_layout.addLayout(dian_row)
 
+        tb_row = QHBoxLayout()
+        tb_row.setSpacing(10)
+        tb_lbl = QLabel("Balance Odoo:")
+        tb_lbl.setStyleSheet("color: #ffb74d; font-size: 11px; font-weight: bold;")
+        tb_lbl.setFixedWidth(100)
+        self.tb_file_path = QLineEdit()
+        self.tb_file_path.setReadOnly(True)
+        self.tb_file_path.setPlaceholderText("Trial Balance / Balance de Comprobación Odoo (opcional, para Otros Ingresos)...")
+        self.tb_file_path.setMinimumHeight(32)
+        self.tb_file_btn = QPushButton("  Examinar Balance...  ")
+        self.tb_file_btn.setProperty("class", "SecondaryButton")
+        self.tb_file_btn.setMinimumHeight(32)
+        self.tb_file_btn.setMinimumWidth(130)
+        self.tb_file_btn.clicked.connect(self.cargar_archivo_tb)
+        tb_row.addWidget(tb_lbl)
+        tb_row.addWidget(self.tb_file_path)
+        tb_row.addWidget(self.tb_file_btn)
+        input_card_layout.addLayout(tb_row)
+
         root.addWidget(input_card)
         root.addSpacing(16)
 
@@ -223,14 +517,30 @@ class VendedoresWidget(QWidget):
         btn_layout.setSpacing(12)
         btn_layout.addStretch()
 
-        self.procesar_btn = QPushButton("   Generar Dashboard de Vendedores   ")
-        self.procesar_btn.setProperty("class", "PrimaryButton")
-        self.procesar_btn.setMinimumHeight(48)
-        self.procesar_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.DemiBold))
-        self.procesar_btn.clicked.connect(self.procesar)
-        self.procesar_btn.setEnabled(False)
+        self.procesar_ventas_btn = QPushButton("   📊 Generar Informe de Ventas (Centros de Costo)   ")
+        self.procesar_ventas_btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #059669; color: #ffffff; border-radius: 8px; font-weight: bold; font-size: 12px;"
+            "  padding: 10px 16px; border: 1px solid #10b981;"
+            "}"
+            "QPushButton:hover { background-color: #10b981; }"
+            "QPushButton:disabled { background-color: #1a2f2b; color: #3a5c53; border-color: #1a2f2b; }"
+        )
+        self.procesar_ventas_btn.setMinimumHeight(48)
+        self.procesar_ventas_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.procesar_ventas_btn.setToolTip("Genera informe estructurado de Ventas por Centro de Costo y Vendedor (Exentas vs Gravadas)")
+        self.procesar_ventas_btn.clicked.connect(self.procesar_ventas)
+        self.procesar_ventas_btn.setEnabled(False)
 
-        self.procesar_nc_btn = QPushButton("   📄 Generar Reporte de Notas Crédito   ")
+        self.config_btn = QPushButton("   ⚙️ Reglas Vendedores (Repuestos / Jaime)   ")
+        self.config_btn.setProperty("class", "SecondaryButton")
+        self.config_btn.setMinimumHeight(48)
+        self.config_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
+        self.config_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.config_btn.setToolTip("Configurar qué vendedores se asignan a Repuestos y cuáles a Vehículos Jaime en tiempo real")
+        self.config_btn.clicked.connect(self.abrir_config_vendedores)
+
+        self.procesar_nc_btn = QPushButton("   📄 Reporte Notas Crédito   ")
         self.procesar_nc_btn.setProperty("class", "SecondaryButton")
         self.procesar_nc_btn.setMinimumHeight(48)
         self.procesar_nc_btn.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
@@ -238,6 +548,13 @@ class VendedoresWidget(QWidget):
         self.procesar_nc_btn.setToolTip("Genera un dashboard exclusivo de Notas Crédito desde el Asiento Contable, recuperando vendedores por cliente")
         self.procesar_nc_btn.clicked.connect(self.procesar_nc)
         self.procesar_nc_btn.setEnabled(False)
+
+        self.procesar_btn = QPushButton("   🎯 Dashboard Vendedores (Pedidos)   ")
+        self.procesar_btn.setProperty("class", "PrimaryButton")
+        self.procesar_btn.setMinimumHeight(48)
+        self.procesar_btn.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
+        self.procesar_btn.clicked.connect(self.procesar)
+        self.procesar_btn.setEnabled(False)
 
         self.limpiar_btn = QPushButton("   🧹 Limpiar Todo   ")
         self.limpiar_btn.setProperty("class", "DangerButton")
@@ -247,8 +564,10 @@ class VendedoresWidget(QWidget):
         self.limpiar_btn.setToolTip("Limpiar todas las rutas, campos y resultados para empezar desde cero")
         self.limpiar_btn.clicked.connect(self.limpiar_todo)
 
-        btn_layout.addWidget(self.procesar_btn)
+        btn_layout.addWidget(self.procesar_ventas_btn)
+        btn_layout.addWidget(self.config_btn)
         btn_layout.addWidget(self.procesar_nc_btn)
+        btn_layout.addWidget(self.procesar_btn)
         btn_layout.addWidget(self.limpiar_btn)
         btn_layout.addStretch()
         root.addWidget(btn_container)
@@ -289,7 +608,7 @@ class VendedoresWidget(QWidget):
     def cargar_archivo(self):
         file, _ = QFileDialog.getOpenFileName(
             self,
-            "Seleccionar archivo de Pedidos de Venta",
+            "Seleccionar archivo de Ventas (Asiento Contable o Pedidos)",
             "",
             "Archivos Excel (*.xlsx *.xls);;Todos los archivos (*)"
         )
@@ -303,11 +622,142 @@ class VendedoresWidget(QWidget):
                 f"  {fname}   |   {fsize:.1f} KB"
             )
 
+            self.procesar_ventas_btn.setEnabled(True)
             self.procesar_btn.setEnabled(True)
-            self.result_text.setPlainText(
-                f"Archivo cargado correctamente: {fname}\n\n"
-                "Haz clic en 'Generar Dashboard de Vendedores' para procesar..."
+
+            diag_str = f"📁 Archivo cargado: {fname} ({fsize:.1f} KB)\n"
+            try:
+                df_prev = _leer_excel_inteligente(file)
+                total_rows = len(df_prev)
+                cols_low = [str(c).lower().strip() for c in df_prev.columns]
+                
+                tiene_producto = any('roducto' in c for c in cols_low)
+                tiene_cc = any('costo' in c or 'sede' in c for c in cols_low)
+                
+                col_num = next((c for c in df_prev.columns if any(kw in str(c).lower() for kw in ['número', 'numero', 'factura', 'referencia'])), None)
+                n_fact = total_rows
+                n_nc = 0
+                if col_num:
+                    s_nums = df_prev[col_num].astype(str)
+                    n_nc = int(s_nums.str.upper().str.contains(r'^NC|^NCC').sum())
+                    n_fact = total_rows - n_nc
+
+                if tiene_producto:
+                    diag_str += f"\n✅ Tipo detectado: Pedidos de Venta (sale.order) con {total_rows} filas."
+                    diag_str += "\n   Listo para generar Dashboard Vendedores con margen y productos."
+                elif tiene_cc:
+                    diag_str += f"\n✅ Tipo detectado: Facturas y Asientos de Ventas ({total_rows} registros totales)."
+                    if n_nc > 0:
+                        diag_str += f"\n   • Facturas de venta emitidas: {n_fact}"
+                        diag_str += f"\n   • Notas Crédito (NC/NCC): {n_nc}"
+                    else:
+                        diag_str += f"\n   • Facturas de venta emitidas: {n_fact}"
+                    diag_str += "\n   Listo para clasificar por Centro de Costo (Exentas vs Gravadas)."
+                else:
+                    diag_str += f"\nℹ️ Registros detectados: {total_rows} filas."
+            except Exception as e:
+                diag_str += f"\nℹ️ Archivo verificado y listo para procesar."
+
+            diag_str += (
+                "\n\nPresione cualquiera de los botones de arriba para procesar:\n"
+                "  • '📊 Generar Informe de Ventas (Centros de Costo)': Matriz Exentas vs Gravadas\n"
+                "  • '🎯 Dashboard Vendedores (Pedidos)': Dashboard integral de facturación"
             )
+            self.result_text.setPlainText(diag_str)
+
+    def procesar_ventas(self):
+        if not self.ruta_archivo:
+            return
+        self.ruta_salida_ventas, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar Informe de Ventas por Centro de Costo",
+            "Informe_Ventas_Por_Centro_Costo.xlsx",
+            "Archivos Excel (*.xlsx)"
+        )
+        if not self.ruta_salida_ventas:
+            return
+
+        self.result_text.setPlainText(
+            "Procesando Informe de Ventas por Centro de Costo y Vendedor...\n"
+            "• Validando y corrigiendo inconsistencias de sedes y vendedores\n"
+            "• Clasificando en Ventas Exentas (0%) vs Gravadas (19%)\n"
+            "• Generando matrices con fórmulas vivas de Excel y subtotales por sede...\n"
+            "Esto puede tardar unos segundos."
+        )
+        self.procesar_ventas_btn.setEnabled(False)
+        self.procesar_ventas_btn.setText("   Procesando Ventas...   ")
+
+        self.thread_ventas = InformeVentasWorker(
+            self.ruta_archivo,
+            self.ruta_salida_ventas,
+            ruta_asiento_nc=getattr(self, 'ruta_asiento_nc', None),
+            ruta_tb=getattr(self, 'ruta_tb', None)
+        )
+        self.thread_ventas.finished.connect(self.on_success_ventas)
+        self.thread_ventas.error.connect(self.on_error_ventas)
+        self.thread_ventas.start()
+
+    def on_success_ventas(self, stats):
+        self.procesar_ventas_btn.setEnabled(True)
+        self.procesar_ventas_btn.setText("   📊 Generar Informe de Ventas (Centros de Costo)   ")
+        self.procesar_btn.setEnabled(True)
+        self.procesar_btn.setText("   🎯 Dashboard Vendedores (Pedidos)   ")
+
+        nc_info = ""
+        bruto_info = ""
+        if stats.get('n_facturas_pos', 0) > 0 and stats.get('n_nc_total', 0) > 0:
+            bruto_info = (
+                f"   • Total Ventas Brutas: ${stats['total_ventas_brutas']:,.0f} ({stats['n_facturas_pos']} facturas)\n"
+                f"   • Total Notas Crédito (-): -${abs(stats['total_nc']):,.0f} ({stats['n_nc_total']} notas cruzadas)\n"
+            )
+        elif stats.get('n_nc_cruzadas', 0) > 0:
+            nc_info = f"   • Notas Crédito cruzadas (-): {stats['n_nc_cruzadas']} (-${abs(stats['total_nc_cruzadas']):,.0f})\n"
+
+        msg = (
+            f"🎉 Informe de Ventas generado con éxito!\n\n"
+            f"Métricas de la Facturación:\n"
+            f"   • Documentos procesados: {stats['total_facturas']}\n"
+            f"{bruto_info}"
+            f"{nc_info}"
+            f"   • Total Facturación Neta: ${stats['total_ventas']:,.0f}\n"
+            f"   • Ventas Exentas (Tarifa 0%): ${stats['total_exentas']:,.0f} ({stats['pct_exento']*100:.1f}%)\n"
+            f"   • Base Gravada (Tarifa 19%): ${stats['total_base_gravada']:,.0f}\n"
+            f"   • Total IVA Facturado: ${stats['total_iva']:,.0f}\n"
+            f"   • Total Ventas Gravadas: ${stats['total_gravado']:,.0f} ({stats['pct_gravado']*100:.1f}%)\n"
+            f"   • Sedes / Centros de Costo: {stats['total_sedes']}\n"
+            f"   • Vendedores activos: {stats['total_vendedores']}\n\n"
+            f"Hojas generadas en el archivo:\n"
+            f"   1. Resumen Ventas CC y Vendedor - Matriz con separación de Ventas Brutas y Notas por vendedor\n"
+            f"   2. Consolidado por Sede - Resumen ejecutivo de facturación bruta, notas y tributario\n"
+            f"   3. Detalle Ventas - Base de datos completa con factura referenciada y columnas de venta bruta vs nota\n"
+            f"   4. Detalle Notas Crédito - Auditoría detallada de cada nota crédito cruzada con su factura de origen\n\n"
+            f"Guardado en:\n{stats['ruta_guardada']}"
+        )
+        if stats.get("tb_cargado"):
+            msg += (
+                f"\n\nConciliación con Balance Odoo (Otros Ingresos y Taller):\n"
+                f"   • Total Otros Ingresos Auditados: ${stats.get('total_otros_ingresos', 0):,.0f}\n"
+                f"   • Liquidación Taller (Auteco + Autotécnica): ${stats.get('liq_taller_total', 0):,.0f}\n"
+                f"   • Devoluciones Cuenta 4175 (Base NCs): ${stats.get('dev_4175', 0):,.0f}\n"
+                f"   • Hoja 'Otros Ingresos y Balance' incluida con éxito en el Excel."
+            )
+        self.result_text.setPlainText(msg)
+
+        try:
+            os.startfile(stats['ruta_guardada'])  # type: ignore
+        except Exception:
+            pass
+
+    def on_error_ventas(self, err_msg):
+        self.procesar_ventas_btn.setEnabled(True)
+        self.procesar_ventas_btn.setText("   📊 Generar Informe de Ventas (Centros de Costo)   ")
+        self.procesar_btn.setEnabled(True)
+        self.procesar_btn.setText("   🎯 Dashboard Vendedores (Pedidos)   ")
+        err_traducido = self._traducir_error(err_msg)
+        self.result_text.setPlainText(f"Error al procesar ventas:\n\n{err_traducido}")
+        QMessageBox.critical(
+            self, "Error", f"No se pudo generar el informe de ventas:\n\n{err_traducido}"
+        )
 
     def procesar(self):
         self.ruta_salida, _ = QFileDialog.getSaveFileName(
@@ -351,11 +801,26 @@ class VendedoresWidget(QWidget):
                 f"Error de estructura en el archivo Excel: {msg_str}\n\n"
                 "Una de las columnas tiene nombre duplicado en el archivo de entrada."
             )
+        if "NoneType" in msg_str and "upper" in msg_str:
+            return (
+                "⚠️ Diagnóstico del archivo: Se detectó una fila donde el Centro de Costo o Vendedor venía en blanco (sin sede asignada).\n\n"
+                "El sistema ya se configuró para asignar la sede automáticamente por el vendedor o marcarlo como 'SIN ASIGNAR' para que nunca se interrumpa."
+            )
+        if "KeyError" in msg_str:
+            return (
+                f"⚠️ No se encontró una columna requerida en el archivo:\n{msg_str}\n\n"
+                "Verifica que el archivo exportado contenga las columnas de Odoo habituales."
+            )
         return msg_str
 
     def on_success(self, stats):
         self.procesar_btn.setEnabled(True)
-        self.procesar_btn.setText("   Generar Dashboard de Vendedores   ")
+        self.procesar_btn.setText("   🎯 Dashboard Vendedores (Pedidos)   ")
+        self.procesar_ventas_btn.setEnabled(True)
+
+        if stats.get('es_asiento_ventas'):
+            self.on_success_ventas(stats)
+            return
 
         if 'ruta_guardada' in stats and stats['ruta_guardada']:
             self.ruta_salida = stats['ruta_guardada']
@@ -426,13 +891,40 @@ class VendedoresWidget(QWidget):
 
     def on_error(self, err_msg):
         self.procesar_btn.setEnabled(True)
-        self.procesar_btn.setText("   Generar Dashboard de Vendedores   ")
+        self.procesar_btn.setText("   🎯 Dashboard Vendedores (Pedidos)   ")
+        self.procesar_ventas_btn.setEnabled(True)
         err_traducido = self._traducir_error(err_msg)
         self.result_text.setPlainText(f"Error al procesar:\n\n{err_traducido}")
         QMessageBox.critical(
             self, "Archivo Bloqueado en Excel" if "ABIERTO" in err_traducido else "Error",
             f"No se pudo generar el dashboard:\n\n{err_traducido}"
         )
+
+    def cargar_archivo_tb(self):
+        file, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar Balance de Comprobación / Trial Balance Odoo",
+            "",
+            "Archivos Excel (*.xlsx *.xls);;Todos los archivos (*)"
+        )
+        if file:
+            self.ruta_tb = file
+            fname = os.path.basename(file)
+            self.tb_file_path.setText(fname)
+            self.result_text.setPlainText(
+                f"⚖️ Balance de Comprobación cargado: {fname}\n\n"
+                "• El sistema extraerá automáticamente las cuentas de Otros Ingresos:\n"
+                "  - Cesantías comercial movilidad y repuestos (41800103 / 41800104)\n"
+                "  - Comisiones (42253001)\n"
+                "  - Intereses de financiación (42100501)\n"
+                "  - Netforms / Administrativos (42352001)\n"
+                "  - Arriendo UMA (42354001 - Supermotos UMA)\n"
+                "  - Descuentos comerciales condicionados (42104001)\n"
+                "  - Ajuste al peso (42958101) y Sobrantes de caja (42955301)\n"
+                "  - Liquidación de Taller (Auteco y Autotécnica bajo 42354001)\n\n"
+                "• Se generará la hoja ejecutiva 'Otros Ingresos y Balance' con el Estado Integral de Ingresos "
+                "y la conciliación forense de diferencias."
+            )
 
     def cargar_archivo_dian(self):
         file, _ = QFileDialog.getOpenFileName(
@@ -465,12 +957,12 @@ class VendedoresWidget(QWidget):
             self.ncc_file_path.setText(fname)
             self.procesar_nc_btn.setEnabled(True)
             self.result_text.setPlainText(
-                f"Asiento Contable cargado: {fname}\n\n"
+                f"📄 Notas Crédito cargadas: {fname}\n\n"
+                "• Al procesar el Informe de Ventas, estas notas crédito se cruzarán automáticamente por Centro de Costo y Vendedor.\n"
+                "• El sistema recuperará el vendedor original de cada factura revertida.\n\n"
                 "Opciones disponibles:\n"
-                "  1. Clic en '📄 Generar Reporte de Notas Crédito' para procesar únicamente las notas de este archivo.\n"
-                "     - Asignará automáticamente vendedores por historial de cliente (filas resaltadas en ámbar).\n"
-                "     - Excluirá borradores y cancelados.\n\n"
-                "  2. O carga arriba 'Pedido de venta' si deseas generar el Dashboard Integral de Vendedores con notas combinadas."
+                "  1. '📊 Generar Informe de Ventas (Centros de Costo)': Matriz consolidada de Ventas Netas con Notas Crédito cruzadas.\n"
+                "  2. '📄 Reporte Notas Crédito': Reporte exclusivo de las Notas Crédito."
             )
 
     def procesar_nc(self):
@@ -541,19 +1033,28 @@ class VendedoresWidget(QWidget):
             f"No se pudo generar el reporte de notas crédito:\n\n{err_traducido}"
         )
 
+    def abrir_config_vendedores(self):
+        dlg = ConfigVendedoresDialog(self)
+        dlg.exec()
+
     def limpiar_todo(self):
         """Limpia todas las rutas, campos de texto y resultados para empezar desde cero."""
         self.ruta_archivo = ""
         self.ruta_salida = ""
+        self.ruta_salida_ventas = ""
         self.ruta_asiento_nc = ""
         self.ruta_salida_nc = ""
         self.ruta_dian = ""
+        self.ruta_tb = ""
         self.file_path.clear()
+        self.tb_file_path.clear()
         self.ncc_file_path.clear()
         self.dian_file_path.clear()
         self.info_label.setText("")
         self.result_text.clear()
+        self.procesar_ventas_btn.setEnabled(False)
+        self.procesar_ventas_btn.setText("   📊 Generar Informe de Ventas (Centros de Costo)   ")
         self.procesar_btn.setEnabled(False)
-        self.procesar_btn.setText("   Generar Dashboard de Vendedores   ")
+        self.procesar_btn.setText("   🎯 Dashboard Vendedores (Pedidos)   ")
         self.procesar_nc_btn.setEnabled(False)
-        self.procesar_nc_btn.setText("   📄 Generar Reporte de Notas Crédito   ")
+        self.procesar_nc_btn.setText("   📄 Reporte Notas Crédito   ")
