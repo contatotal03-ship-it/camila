@@ -7,7 +7,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-GITHUB_REPO = "contatotal03-ship-it/descargas-software"
+GITHUB_REPO = "contatotal03-ship-it/camila"
 AUTH_TOKEN = "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"
 BASE_DIR = Path(__file__).parent.resolve()
 
@@ -72,6 +72,7 @@ def build_exe_and_zip(version):
         "--add-data", "ui/styles.qss;ui/",
         "--add-data", "ui/logo.png;ui/",
         "--add-data", "version.json;.",
+        "--add-data", "vendedores_config.json;." if (BASE_DIR / "vendedores_config.json").exists() else "--hidden-import=openpyxl",
         "main.py"
     ]
     
@@ -90,7 +91,7 @@ def build_exe_and_zip(version):
     rel_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(exe_path, rel_dir / "Conciliador_DIAN_vs_Sistema.exe")
     
-    for opt_file in ["version.json", "configuracion_conciliador.json"]:
+    for opt_file in ["version.json", "configuracion_conciliador.json", "vendedores_config.json"]:
         src = BASE_DIR / opt_file
         if src.exists():
             shutil.copy2(src, rel_dir / opt_file)
@@ -226,16 +227,22 @@ def main():
     curr_notes = current_data.get("release_notes", "")
     
     print(f"\nVersión configurada actualmente: v{curr_ver}")
-    new_ver = input(f"Ingresa la nueva versión (Enter para mantener {curr_ver}): ").strip()
-    if not new_ver:
-        new_ver = curr_ver
-    new_ver = new_ver.lstrip("v")
-    
-    print(f"\nNotas de versión actuales:\n{curr_notes}\n")
-    new_notes = input("Escribe nuevas notas (Enter para mantener las anteriores): ").strip()
-    if not new_notes:
-        new_notes = curr_notes
-        
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        new_ver = sys.argv[1].strip().lstrip("v")
+    else:
+        new_ver = input(f"Ingresa la nueva versión (Enter para mantener {curr_ver}): ").strip()
+        if not new_ver:
+            new_ver = curr_ver
+        new_ver = new_ver.lstrip("v")
+
+    if len(sys.argv) > 2 and sys.argv[2].strip():
+        new_notes = sys.argv[2].strip()
+    else:
+        print(f"\nNotas de versión actuales:\n{curr_notes}\n")
+        new_notes = input("Escribe nuevas notas (Enter para mantener las anteriores): ").strip()
+        if not new_notes:
+            new_notes = curr_notes
+            
     exe_path, zip_path = build_exe_and_zip(new_ver)
     if not exe_path:
         sys.exit(1)

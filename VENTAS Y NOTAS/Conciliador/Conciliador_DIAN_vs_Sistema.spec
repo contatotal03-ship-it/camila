@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('ui/styles.qss', 'ui/'), ('ui/logo.png', 'ui/'), ('version.json', '.')],
+    datas=[('ui/styles.qss', 'ui/'), ('ui/logo.png', 'ui/'), ('version.json', '.'), ('vendedores_config.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
-  "release_notes": "• Conciliación inteligente de Ventas, Compras y Vendedores.\n• Reportes ejecutivos automatizados en Excel con formato condicional.\n• Módulo de auto-actualización automática desde GitHub.",
+  "version": "1.2.0",
+  "release_notes": "Version 1.2.0: Integracion de Transporte 4145, Taller 42, apertura maximizada en pantalla completa, filtros en encabezados y diseno sin lineas de cuadricula.",
   "download_url": "https://github.com/contatotal03-ship-it/camila/releases/latest/download/Conciliador_DIAN_vs_Sistema.exe"
 }
