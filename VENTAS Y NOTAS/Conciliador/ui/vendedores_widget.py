@@ -516,7 +516,7 @@ class VendedoresWidget(QWidget):
         gastos_lbl.setFixedWidth(100)
         self.gastos_file_path = QLineEdit()
         self.gastos_file_path.setReadOnly(True)
-        self.gastos_file_path.setPlaceholderText("Gastos por Centro de Costos / Sedes (opcional, para P&L y Hoja Octubre)...")
+        self.gastos_file_path.setPlaceholderText("Gastos por Centro de Costos / Sedes (opcional, para Estado de Resultados y Gastos por CC)...")
         self.gastos_file_path.setMinimumHeight(32)
         self.gastos_file_btn = QPushButton("  Examinar Gastos...  ")
         self.gastos_file_btn.setProperty("class", "SecondaryButton")
@@ -964,7 +964,7 @@ class VendedoresWidget(QWidget):
                 f"📊 Gastos por Centro de Costo cargados: {fname}\n\n"
                 "• El sistema integrará las pestañas de sedes (Consolidado, San José, Granada Mobility, San Martín, Villavicencio, Puerto Inírida, Carreño, Granada TVS).\n"
                 "• Conciliará los gastos (Clase 5: Administrativos 51, Ventas 52, Financieros 53).\n"
-                "• Generará automáticamente las hojas 'OCTUBRE' y 'UTILIDAD_OCTUBRE' con diseño pastel ejecutivo y fórmulas vivas de Excel."
+                "• Generará automáticamente las hojas 'Gastos por Centro Costo' y 'Estado de Resultados' con diseño pastel ejecutivo y fórmulas vivas de Excel."
             )
 
     def cargar_archivo_dian(self):

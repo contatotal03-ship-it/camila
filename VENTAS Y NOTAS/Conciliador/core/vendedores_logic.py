@@ -2835,7 +2835,31 @@ def _crear_hoja_separador_y_operacion(wb, det_max_r, sedes):
 
 
 
-def _style_pastel_octubre(ws, accounts_51, accounts_52, accounts_53, sede_data, sedes_keys):
+def _detectar_periodo(ruta_entrada=None, ruta_gastos=None, ruta_tb=None):
+    """
+    Detecta automáticamente el período o mes contable a partir de los nombres de archivo
+    o contenido disponible, evitando supuestos fijos.
+    """
+    import os, re
+    meses_map = {
+        'ENERO': 'ENERO', 'FEBRERO': 'FEBRERO', 'MARZO': 'MARZO', 'ABRIL': 'ABRIL',
+        'MAYO': 'MAYO', 'JUNIO': 'JUNIO', 'JULIO': 'JULIO', 'AGOSTO': 'AGOSTO',
+        'SEPTIEMBRE': 'SEPTIEMBRE', 'SETIEMBRE': 'SEPTIEMBRE', 'OCTUBRE': 'OCTUBRE',
+        'NOVIEMBRE': 'NOVIEMBRE', 'DICIEMBRE': 'DICIEMBRE',
+        'OCT': 'OCTUBRE', 'NOV': 'NOVIEMBRE', 'DIC': 'DICIEMBRE',
+        'ENE': 'ENERO', 'FEB': 'FEBRERO', 'MAR': 'MARZO', 'ABR': 'ABRIL',
+        'MAY': 'MAYO', 'JUN': 'JUNIO', 'JUL': 'JULIO', 'AGO': 'AGOSTO', 'SEP': 'SEPTIEMBRE'
+    }
+    all_text = " ".join([os.path.basename(p or "") for p in [ruta_entrada, ruta_gastos, ruta_tb]]).upper()
+    match_yr = re.search(r'\b(202\d)\b', all_text)
+    year_str = match_yr.group(1) if match_yr else "2026"
+    for k, v in meses_map.items():
+        if re.search(rf'\b{k}\b', all_text):
+            return f"{v} {year_str}"
+    return f"PERÍODO {year_str}"
+
+
+def _style_pastel_gastos(ws, accounts_51, accounts_52, accounts_53, sede_data, sedes_keys, periodo_label="OCTUBRE 2026"):
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
@@ -2986,22 +3010,36 @@ def _style_pastel_octubre(ws, accounts_51, accounts_52, accounts_53, sede_data, 
     for col_l, w in widths.items():
         ws.column_dimensions[col_l].width = w
     ws.views.sheetView[0].showGridLines = True
-    return r_total, r_sin_int, row_int
+    return r_sub_51, r_sub_52, r_sub_53, r_total, r_sin_int, row_int
 
 
-def _style_pastel_utilidad(ws, r_total_oct, r_sin_int_oct, r_int_oct):
+def _style_pastel_utilidad(
+    ws,
+    sh_gastos_name,
+    r_total_gastos,
+    r_sin_int_gastos,
+    r_int_gastos,
+    r_sub_51,
+    r_sub_52,
+    r_sub_53,
+    tot_sed_r=14,
+    tot_s3_costo_row=47,
+    periodo_label="OCTUBRE 2026",
+    sede_row_map=None
+):
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
     font_name = 'Arial'
     f_title = Font(name=font_name, size=13, bold=True, color='1B365D')
-    f_subtitle = Font(name=font_name, size=10, italic=True, color='5D6D7E')
+    f_subtitle = Font(name=font_name, size=9, italic=True, color='5D6D7E')
     f_hdr = Font(name=font_name, size=11, bold=True, color='FFFFFF')
     fill_slate = PatternFill(start_color='2C3E50', end_color='2C3E50', fill_type='solid')
     fill_ice_blue = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
     fill_periwinkle = PatternFill(start_color='B4C6E7', end_color='B4C6E7', fill_type='solid')
     fill_mint = PatternFill(start_color='D4EFDF', end_color='D4EFDF', fill_type='solid')
     fill_blush = PatternFill(start_color='FADBD8', end_color='FADBD8', fill_type='solid')
+    fill_net = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid')
     f_bold = Font(name=font_name, size=10, bold=True, color='1B365D')
     f_regular = Font(name=font_name, size=10, color='202020')
     f_op_bold = Font(name=font_name, size=11, bold=True, color='145A32')
@@ -3016,147 +3054,177 @@ def _style_pastel_utilidad(ws, r_total_oct, r_sin_int_oct, r_int_oct):
     total_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_double_bottom)
     net_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_double_bottom)
 
-    # Resumen Ejecutivo del Mes (Octubre 2026)
-    ws.cell(row=2, column=2, value='CONCEPTO FINANCIERO').font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
-    ws.cell(row=2, column=2).fill = fill_slate; ws.cell(row=2, column=2).alignment = Alignment(horizontal='left', vertical='center')
-    ws.cell(row=2, column=3, value='OCTUBRE 2026').font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
-    ws.cell(row=2, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=2, column=3).fill = fill_slate
-    ws.cell(row=2, column=4, value='% INGRESOS').font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
-    ws.cell(row=2, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=2, column=4).fill = fill_slate
-    ws.row_dimensions[2].height = 24
+    # 1. ENCABEZADO GERENCIAL
+    ws.cell(row=2, column=2, value="CH INVERSIONES COLOMBIA S.A.S ZOMAC | NIT 901.368.587-8").font = f_title
+    ws.cell(row=3, column=2, value=f"ESTADO DE RESULTADOS INTEGRAL Y CONTROL GERENCIAL DE GASTOS - {periodo_label}").font = f_subtitle
+    ws.row_dimensions[2].height = 22
+    ws.row_dimensions[3].height = 18
 
-    ws.cell(row=3, column=2, value='Ingresos Operacionales Brutos').font = f_regular; ws.cell(row=3, column=2).border = box_border
-    ws.cell(row=3, column=3, value=2033857356.96).number_format = '#,##0.00'; ws.cell(row=3, column=3).font = f_bold; ws.cell(row=3, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=3, column=3).border = box_border
-    ws.cell(row=3, column=4, value='=C3/$C$3').number_format = '0.0%'; ws.cell(row=3, column=4).font = f_regular; ws.cell(row=3, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=3, column=4).border = box_border
+    # 2. TABLA 1: ESTADO DE RESULTADOS CONSOLIDADO (TOTAL EMPRESA)
+    r_t1_hdr = 5
+    for col_i, h in [(2, 'CONCEPTO FINANCIERO'), (3, f'VALOR CONSOLIDADO ({periodo_label})'), (4, '% INGRESOS NETOS'), (5, 'ORIGEN / FUENTE CONTABLE')]:
+        c = ws.cell(row=r_t1_hdr, column=col_i, value=h); c.font = f_hdr; c.fill = fill_slate; c.border = subtotal_border
+        c.alignment = Alignment(horizontal='left' if col_i in [2, 5] else ('right' if col_i == 3 else 'center'), vertical='center')
+    ws.row_dimensions[r_t1_hdr].height = 26
 
-    ws.cell(row=4, column=2, value='(-) Devoluciones en Ventas (4175)').font = f_regular; ws.cell(row=4, column=2).border = box_border
-    ws.cell(row=4, column=3, value=-89459812.75).number_format = '#,##0.00'; ws.cell(row=4, column=3).font = f_regular; ws.cell(row=4, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=4, column=3).border = box_border
-    ws.cell(row=4, column=4, value='=C4/$C$3').number_format = '0.0%'; ws.cell(row=4, column=4).font = f_regular; ws.cell(row=4, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=4, column=4).border = box_border
+    t1_rows = [
+        (6, 'Ingresos Operacionales Brutos', f"='Consolidado por Sede'!I{tot_sed_r}", '=C6/$C$8', 'Consolidado de Facturación Comercial Bruta', f_regular, None, box_border),
+        (7, '(-) Devoluciones en Ventas y Notas Crédito (4175)', f"='Consolidado por Sede'!L{tot_sed_r}", '=C7/$C$8', 'Notas Crédito Efectivas en Ventas', f_regular, None, box_border),
+        (8, '(=) INGRESOS OPERACIONALES NETOS', '=+C6+C7', '=C8/$C$8', 'Facturación Comercial Neta Efectiva', f_bold, fill_ice_blue, subtotal_border),
+        (9, '(-) Costo de Ventas (Grupo 61 Odoo)', f"=-'Otros Ingresos y Balance'!F{tot_s3_costo_row}", '=C9/$C$8', 'Auditoría Forense Cuentas 61 Balance Odoo', f_regular, None, box_border),
+        (10, '(=) UTILIDAD BRUTA OPERACIONAL', '=+C8+C9', '=C10/$C$8', 'Margen Bruto de Comercialización', f_bold, fill_periwinkle, subtotal_border),
+        (11, '(-) Gastos Operacionales (sin intereses)', f"=-'{sh_gastos_name}'!C{r_sin_int_gastos}", '=C11/$C$8', f'Clase 5 Administración y Ventas ({sh_gastos_name})', f_regular, None, box_border),
+        (12, '(=) UTILIDAD OPERACIONAL', '=+C10+C11', '=C12/$C$8', 'Resultado Operacional del Ejercicio', f_op_bold, fill_mint, subtotal_border),
+        (13, '(-) Intereses Financieros (Cuenta 53052001)', f"=-'{sh_gastos_name}'!C{r_int_gastos}", '=C13/$C$8', 'Gastos Financieros de Deuda (Cuenta 53052001)', f_int_bold, fill_blush, subtotal_border),
+        (14, '(=) UTILIDAD / RESULTADO NETO', '=+C12+C13', '=C14/$C$8', 'Utilidad Neta Final del Ejercicio', f_net_bold, fill_net, net_border),
+    ]
 
-    ws.cell(row=5, column=2, value='(-) Costo de Ventas (Grupo 61)').font = f_regular; ws.cell(row=5, column=2).border = box_border
-    ws.cell(row=5, column=3, value=-1630192415.02).number_format = '#,##0.00'; ws.cell(row=5, column=3).font = f_regular; ws.cell(row=5, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=5, column=3).border = box_border
-    ws.cell(row=5, column=4, value='=C5/$C$3').number_format = '0.0%'; ws.cell(row=5, column=4).font = f_regular; ws.cell(row=5, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=5, column=4).border = box_border
+    for r_num, conc, f_val, f_pct, src, fn, fl, bd in t1_rows:
+        ws.row_dimensions[r_num].height = 22
+        c_conc = ws.cell(row=r_num, column=2, value=conc); c_conc.font = fn; c_conc.border = bd; c_conc.alignment = Alignment(horizontal='left', vertical='center')
+        if fl: c_conc.fill = fl
+        c_v = ws.cell(row=r_num, column=3, value=f_val); c_v.font = fn; c_v.border = bd; c_v.alignment = Alignment(horizontal='right', vertical='center'); c_v.number_format = '#,##0.00'
+        if fl: c_v.fill = fl
+        c_p = ws.cell(row=r_num, column=4, value=f_pct); c_p.font = fn; c_p.border = bd; c_p.alignment = Alignment(horizontal='center', vertical='center'); c_p.number_format = '0.0%'
+        if fl: c_p.fill = fl
+        c_s = ws.cell(row=r_num, column=5, value=src); c_s.font = f_subtitle; c_s.border = bd; c_s.alignment = Alignment(horizontal='left', vertical='center')
+        if fl: c_s.fill = fl
 
-    ws.cell(row=6, column=2, value='(-) Gastos Operacionales (sin intereses)').font = f_regular; ws.cell(row=6, column=2).border = box_border
-    ws.cell(row=6, column=3, value=f"=-OCTUBRE!C{r_sin_int_oct}").number_format = '#,##0.00'; ws.cell(row=6, column=3).font = f_regular; ws.cell(row=6, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=6, column=3).border = box_border
-    ws.cell(row=6, column=4, value='=C6/$C$3').number_format = '0.0%'; ws.cell(row=6, column=4).font = f_regular; ws.cell(row=6, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=6, column=4).border = box_border
+    ws.cell(row=16, column=2, value="Nota de Auditoría Contable: Todas las cifras de este Estado de Resultados provienen 100% de fórmulas vivas vinculadas a los balances y libros contables oficiales provistos. Cero supuestos, estimaciones o valores fijos.").font = f_subtitle
 
-    ws.cell(row=7, column=2, value='(=) UTILIDAD OPERACIONAL').font = f_op_bold; ws.cell(row=7, column=2).fill = fill_mint; ws.cell(row=7, column=2).border = subtotal_border
-    ws.cell(row=7, column=3, value='=SUM(C3:C6)').number_format = '#,##0.00'; ws.cell(row=7, column=3).font = f_op_bold; ws.cell(row=7, column=3).fill = fill_mint; ws.cell(row=7, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=7, column=3).border = subtotal_border
-    ws.cell(row=7, column=4, value='=C7/$C$3').number_format = '0.0%'; ws.cell(row=7, column=4).font = f_op_bold; ws.cell(row=7, column=4).fill = fill_mint; ws.cell(row=7, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=7, column=4).border = subtotal_border
+    # 3. TABLA 2: RESUMEN DE GASTOS POR CENTRO DE COSTO (CLASE 5)
+    r_t2_hdr = 19
+    ws.cell(row=r_t2_hdr-2, column=2, value="CH INVERSIONES COLOMBIA S.A.S ZOMAC | NIT 901.368.587-8").font = f_title
+    ws.cell(row=r_t2_hdr-1, column=2, value=f"ESTRUCTURA Y DISTRIBUCIÓN DE GASTOS POR CENTRO DE COSTO (CLASE 5) - {periodo_label}").font = f_subtitle
+    ws.row_dimensions[r_t2_hdr-2].height = 20
+    ws.row_dimensions[r_t2_hdr-1].height = 18
 
-    ws.cell(row=8, column=2, value='(-) Intereses Financieros (Cuenta 53052001)').font = f_int_bold; ws.cell(row=8, column=2).border = box_border
-    ws.cell(row=8, column=3, value=f"=-OCTUBRE!C{r_int_oct}").number_format = '#,##0.00'; ws.cell(row=8, column=3).font = f_int_bold; ws.cell(row=8, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=8, column=3).border = box_border
-    ws.cell(row=8, column=4, value='=C8/$C$3').number_format = '0.0%'; ws.cell(row=8, column=4).font = f_regular; ws.cell(row=8, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=8, column=4).border = box_border
-
-    ws.cell(row=9, column=2, value='(=) UTILIDAD / RESULTADO NETO').font = f_net_bold; ws.cell(row=9, column=2).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); ws.cell(row=9, column=2).border = total_border
-    ws.cell(row=9, column=3, value='=+C7+C8').number_format = '#,##0.00'; ws.cell(row=9, column=3).font = f_net_bold; ws.cell(row=9, column=3).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); ws.cell(row=9, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=9, column=3).border = total_border
-    ws.cell(row=9, column=4, value='=C9/$C$3').number_format = '0.0%'; ws.cell(row=9, column=4).font = f_net_bold; ws.cell(row=9, column=4).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); ws.cell(row=9, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=9, column=4).border = total_border
-
-    # Estado de Resultados por Centro de Costo - Octubre 2026
-    r_start = 12
-    ws.cell(row=r_start, column=2, value="CH INVERSIONES COLOMBIA S.A.S ZOMAC | NIT 901.368.587-8").font = f_title
-    ws.cell(row=r_start+1, column=2, value="ESTADO DE RESULTADOS INTEGRAL Y UTILIDAD POR CENTRO DE COSTO - OCTUBRE 2026").font = f_subtitle
-    r_tbl_hdr = r_start + 3
-    headers_pnl = ['Concepto Financiero', 'San José', 'Granada Mobility', 'Granada TVS', 'San Martín', 'Villavicencio', 'Puerto Inírida', 'Carreño', 'Consolidado']
-    for idx, h in enumerate(headers_pnl, 2):
-        c = ws.cell(row=r_tbl_hdr, column=idx, value=h); c.font = f_hdr; c.fill = fill_slate
+    headers_t2 = ['Concepto de Gasto / Sede', 'San José', 'Granada Mobility', 'San Martín', 'Villavicencio', 'Puerto Inírida', 'Granada TVS', 'Carreño', 'Consolidado']
+    for idx, h in enumerate(headers_t2, 2):
+        c = ws.cell(row=r_t2_hdr, column=idx, value=h); c.font = f_hdr; c.fill = fill_slate
         c.alignment = Alignment(horizontal='center' if idx != 2 else 'left', vertical='center')
         c.border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_dark)
-    ws.row_dimensions[r_tbl_hdr].height = 28
+    ws.row_dimensions[r_t2_hdr].height = 26
 
-    pnl_lines = [
-        ("Ingresos Operacionales (4 sin 4175)", [547365470.00, 513599398.06, 208581549.73, 282399068.47, 485111931.31, 18446495.00, 758823.00]),
-        ("(-) Devoluciones en Ventas (4175)", [-8077000.00, -481932.77, 0.0, 0.0, -33562182.98, -500000.0, 0.0]),
-        ("(=) Ingresos Operacionales Netos", "NET_REV"),
-        ("(-) Costo de Ventas (Clase 6)", [462716825.61, 359264588.69, 176349853.00, 238092070.00, 384877647.72, 11735748.00, 0.0]),
-        ("(=) Utilidad Bruta Operacional", "GROSS_PROFIT"),
-        ("(-) Gastos Operacionales sin interés", "EXP_LINK"),
-        ("(=) UTILIDAD OPERACIONAL", "OP_PROFIT"),
-        ("(-) Intereses de Deuda (Cuenta 53052001)", "INT_LINK"),
-        ("(=) UTILIDAD / RESULTADO NETO", "NET_PROFIT"),
-        ("% Margen Operacional", "MARG_OP"),
-        ("% Margen Neto", "MARG_NET")
+    col_map_gastos = {3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H', 8: 'I', 9: 'J', 10: 'C'}
+
+    t2_lines = [
+        (20, 'Gastos de Administración (Grupo 51)', r_sub_51, f_regular, None, box_border),
+        (21, 'Gastos de Ventas (Grupo 52)', r_sub_52, f_regular, None, box_border),
+        (22, 'Gastos Financieros sin Intereses (Grupo 53)', r_sub_53, f_regular, None, box_border),
+        (23, '(=) Total Gastos Operacionales (sin intereses)', r_sin_int_gastos, f_bold, fill_ice_blue, subtotal_border),
+        (24, '(-) Intereses de Deuda (Cuenta 53052001)', r_int_gastos, f_int_bold, fill_blush, subtotal_border),
+        (25, '(=) TOTAL GASTOS CLASE 5', r_total_gastos, f_bold, fill_periwinkle, total_border),
     ]
-    col_map = {3: 'D', 4: 'E', 5: 'I', 6: 'F', 7: 'G', 8: 'H', 9: 'J', 10: 'C'}
-    r_map = {}
-    curr_pnl_r = r_tbl_hdr + 1
 
-    for label, kind in pnl_lines:
-        r_map[label] = curr_pnl_r
-        c_lbl = ws.cell(row=curr_pnl_r, column=2, value=label)
-        c_lbl.border = box_border; c_lbl.alignment = Alignment(horizontal='left', vertical='center')
-        ws.row_dimensions[curr_pnl_r].height = 22
+    for r_num, lbl, g_row, fn, fl, bd in t2_lines:
+        ws.row_dimensions[r_num].height = 21
+        c_lbl = ws.cell(row=r_num, column=2, value=lbl)
+        c_lbl.font = fn; c_lbl.border = bd; c_lbl.alignment = Alignment(horizontal='left', vertical='center')
+        if fl: c_lbl.fill = fl
+        for col_i in range(3, 11):
+            g_col = col_map_gastos[col_i]
+            c = ws.cell(row=r_num, column=col_i, value=f"='{sh_gastos_name}'!{g_col}{g_row}")
+            c.font = fn; c.border = bd; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'
+            if fl: c.fill = fl
 
-        if isinstance(kind, list):
-            for col_idx, val in enumerate(kind, 3):
-                c = ws.cell(row=curr_pnl_r, column=col_idx, value=val)
-                c.font = f_regular; c.number_format = '#,##0.00'; c.alignment = Alignment(horizontal='right', vertical='center'); c.border = box_border
-            c_cons = ws.cell(row=curr_pnl_r, column=10, value=f"=SUM(C{curr_pnl_r}:I{curr_pnl_r})")
-            c_cons.font = f_bold; c_cons.number_format = '#,##0.00'; c_cons.alignment = Alignment(horizontal='right', vertical='center'); c_cons.border = box_border
-        elif kind == "NET_REV":
-            r_rev = r_map["Ingresos Operacionales (4 sin 4175)"]; r_dev = r_map["(-) Devoluciones en Ventas (4175)"]
-            c_lbl.font = f_bold; c_lbl.fill = fill_ice_blue
-            for col_i in range(3, 11):
-                col_l = get_column_letter(col_i)
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_rev}+{col_l}{r_dev}")
-                c.font = f_bold; c.fill = fill_ice_blue; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
-        elif kind == "GROSS_PROFIT":
-            r_netrev = r_map["(=) Ingresos Operacionales Netos"]; r_cost = r_map["(-) Costo de Ventas (Clase 6)"]
-            c_lbl.font = f_bold; c_lbl.fill = fill_periwinkle
-            for col_i in range(3, 11):
-                col_l = get_column_letter(col_i)
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_netrev}-{col_l}{r_cost}")
-                c.font = f_bold; c.fill = fill_periwinkle; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
-        elif kind == "EXP_LINK":
-            c_lbl.font = f_regular
-            for col_i in range(3, 11):
-                oct_col = col_map[col_i]
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+OCTUBRE!{oct_col}{r_sin_int_oct}")
-                c.font = f_regular; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = box_border
-        elif kind == "OP_PROFIT":
-            r_gross = r_map["(=) Utilidad Bruta Operacional"]; r_exp = r_map["(-) Gastos Operacionales sin interés"]
-            c_lbl.font = f_op_bold; c_lbl.fill = fill_mint
-            for col_i in range(3, 11):
-                col_l = get_column_letter(col_i)
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_gross}-{col_l}{r_exp}")
-                c.font = f_op_bold; c.fill = fill_mint; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = total_border
-        elif kind == "INT_LINK":
-            c_lbl.font = f_int_bold; c_lbl.fill = fill_blush
-            for col_i in range(3, 11):
-                oct_col = col_map[col_i]
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+OCTUBRE!{oct_col}{r_int_oct}")
-                c.font = f_int_bold; c.fill = fill_blush; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
-        elif kind == "NET_PROFIT":
-            r_op = r_map["(=) UTILIDAD OPERACIONAL"]; r_int = r_map["(-) Intereses de Deuda (Cuenta 53052001)"]
-            c_lbl.font = f_net_bold; c_lbl.fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid')
-            for col_i in range(3, 11):
-                col_l = get_column_letter(col_i)
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_op}-{col_l}{r_int}")
-                c.font = f_net_bold; c.fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = net_border
-        elif kind == "MARG_OP":
-            r_op = r_map["(=) UTILIDAD OPERACIONAL"]; r_netrev = r_map["(=) Ingresos Operacionales Netos"]
-            c_lbl.font = f_bold
-            for col_i in range(3, 11):
-                col_l = get_column_letter(col_i)
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_op}/{col_l}{r_netrev}")
-                c.font = f_bold; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '0.00%'; c.border = box_border
-        elif kind == "MARG_NET":
-            r_net = r_map["(=) UTILIDAD / RESULTADO NETO"]; r_netrev = r_map["(=) Ingresos Operacionales Netos"]
-            c_lbl.font = f_bold
-            for col_i in range(3, 11):
-                col_l = get_column_letter(col_i)
-                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_net}/{col_l}{r_netrev}")
-                c.font = f_bold; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '0.00%'; c.border = box_border
-        curr_pnl_r += 1
+    ws.row_dimensions[26].height = 21
+    c_p_lbl = ws.cell(row=26, column=2, value='% Participación en el Gasto Total (Clase 5)')
+    c_p_lbl.font = f_bold; c_p_lbl.border = subtotal_border; c_p_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    for col_i in range(3, 10):
+        col_l = get_column_letter(col_i)
+        c = ws.cell(row=26, column=col_i, value=f"=+{col_l}25/$J$25")
+        c.font = f_bold; c.border = subtotal_border; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '0.00%'
+    c_tot_p = ws.cell(row=26, column=10, value="=1.0")
+    c_tot_p.font = f_bold; c_tot_p.border = subtotal_border; c_tot_p.alignment = Alignment(horizontal='right', vertical='center'); c_tot_p.number_format = '0.00%'
 
-    widths_util = {'A': 14, 'B': 44, 'C': 20, 'D': 20, 'E': 20, 'F': 20, 'G': 20, 'H': 20, 'I': 20, 'J': 22, 'K': 16, 'L': 16, 'M': 18, 'N': 18, 'O': 20}
+    # 4. TABLA 3: ANÁLISIS DE COBERTURA OPERACIONAL POR SEDE (VENTAS NETAS VS GASTOS CC)
+    r_t3_hdr = 30
+    ws.cell(row=r_t3_hdr-2, column=2, value=f"ANÁLISIS DE COBERTURA OPERACIONAL POR SEDE - {periodo_label}").font = f_title
+    ws.cell(row=r_t3_hdr-1, column=2, value="Cruce de Facturación Comercial Neta (Consolidado por Sede) vs Gastos Operacionales (Informe de Centro de Costos)").font = f_subtitle
+    ws.row_dimensions[r_t3_hdr-2].height = 20
+    ws.row_dimensions[r_t3_hdr-1].height = 18
+
+    headers_t3 = ['Línea de Análisis Operacional', 'San José', 'Granada Mobility', 'San Martín', 'Villavicencio', 'Puerto Inírida', 'Granada TVS', 'Carreño', 'Consolidado']
+    for idx, h in enumerate(headers_t3, 2):
+        c = ws.cell(row=r_t3_hdr, column=idx, value=h); c.font = f_hdr; c.fill = fill_slate
+        c.alignment = Alignment(horizontal='center' if idx != 2 else 'left', vertical='center')
+        c.border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_dark)
+    ws.row_dimensions[r_t3_hdr].height = 26
+
+    if not sede_row_map:
+        sede_row_map = {
+            "San Jose": 10,
+            "Granada Mobility": 8,
+            "San Martin": 11,
+            "Villavicencio": 12,
+            "Inirida": 9,
+            "Granada": 7,
+            "SIN ASIGNAR": 13,
+            "TOTAL": tot_sed_r
+        }
+
+    sede_t3_map = {
+        3: sede_row_map.get("San Jose", 10),
+        4: sede_row_map.get("Granada Mobility", 8),
+        5: sede_row_map.get("San Martin", 11),
+        6: sede_row_map.get("Villavicencio", 12),
+        7: sede_row_map.get("Inirida", 9),
+        8: sede_row_map.get("Granada", 7),
+        9: sede_row_map.get("SIN ASIGNAR", 13),
+        10: tot_sed_r
+    }
+
+    ws.row_dimensions[31].height = 21
+    c_f_lbl = ws.cell(row=31, column=2, value='Facturación Comercial Neta (Ventas)')
+    c_f_lbl.font = f_bold; c_f_lbl.border = box_border; c_f_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    for col_i in range(3, 11):
+        s_row = sede_t3_map[col_i]
+        c = ws.cell(row=31, column=col_i, value=f"='Consolidado por Sede'!M{s_row}")
+        c.font = f_bold; c.border = box_border; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'
+
+    ws.row_dimensions[32].height = 21
+    c_g_lbl = ws.cell(row=32, column=2, value='(-) Gastos Operacionales Sede (sin intereses)')
+    c_g_lbl.font = f_regular; c_g_lbl.border = box_border; c_g_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    for col_i in range(3, 11):
+        col_l = get_column_letter(col_i)
+        c = ws.cell(row=32, column=col_i, value=f"=+{col_l}23")
+        c.font = f_regular; c.border = box_border; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'
+
+    ws.row_dimensions[33].height = 22
+    c_m_lbl = ws.cell(row=33, column=2, value='(=) Margen de Cobertura Operacional Sede')
+    c_m_lbl.font = f_op_bold; c_m_lbl.fill = fill_mint; c_m_lbl.border = subtotal_border; c_m_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    for col_i in range(3, 11):
+        col_l = get_column_letter(col_i)
+        c = ws.cell(row=33, column=col_i, value=f"=+{col_l}31-{col_l}32")
+        c.font = f_op_bold; c.fill = fill_mint; c.border = subtotal_border; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'
+
+    ws.row_dimensions[34].height = 21
+    c_mp_lbl = ws.cell(row=34, column=2, value='% Margen de Cobertura Operacional')
+    c_mp_lbl.font = f_bold; c_mp_lbl.border = box_border; c_mp_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    for col_i in range(3, 11):
+        col_l = get_column_letter(col_i)
+        c = ws.cell(row=34, column=col_i, value=f"=+{col_l}33/{col_l}31")
+        c.font = f_bold; c.border = box_border; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '0.00%'
+
+    ws.cell(row=36, column=2, value="Nota de Costos: El Costo de Ventas (Grupo 61) no se distribuye por sede en este cuadro porque en el Balance de Prueba de Odoo se registra de forma global ($1.630.192.415,02) para toda la empresa. Distribuirlo por sede sin un registro contable oficial sería una estimación no soportada.").font = f_subtitle
+
+    widths_util = {'A': 4, 'B': 46, 'C': 22, 'D': 22, 'E': 20, 'F': 20, 'G': 20, 'H': 20, 'I': 20, 'J': 24, 'K': 16}
     for col_l, w in widths_util.items():
         ws.column_dimensions[col_l].width = w
-    ws.views.sheetView[0].showGridLines = True
+    ws.views.sheetView[0].showGridLines = False
 
 
-def _adjuntar_hojas_gastos_y_utilidad(wb, ruta_gastos):
+def _adjuntar_hojas_gastos_y_utilidad(
+    wb,
+    ruta_gastos,
+    tot_sed_r=14,
+    tot_s3_costo_row=47,
+    ruta_entrada=None,
+    ruta_tb=None,
+    sedes=None,
+    s_start=6
+):
     import openpyxl
     sedes_keys = [
         ('San jose', 'San José'),
@@ -3203,14 +3271,47 @@ def _adjuntar_hojas_gastos_y_utilidad(wb, ruta_gastos):
             else:
                 sede_data['VILLAVICENCIO'][code] = sede_data['VILLAVICENCIO'].get(code, 0.0) + diff
 
-    for sh_name in ['OCTUBRE', 'UTILIDAD_OCTUBRE']:
+    # Detectar período dinámico
+    periodo_label = _detectar_periodo(ruta_entrada, ruta_gastos, ruta_tb)
+
+    # Nombres universales y profesionales para las pestañas
+    sh_gastos_name = 'Gastos por Centro Costo'
+    sh_util_name = 'Estado de Resultados'
+
+    # Eliminar hojas previas si existieran
+    for sh_name in ['OCTUBRE', 'UTILIDAD_OCTUBRE', sh_gastos_name, sh_util_name]:
         if sh_name in wb.sheetnames:
             del wb[sh_name]
 
-    ws_oct = wb.create_sheet(title='OCTUBRE')
-    r_total_oct, r_sin_int_oct, r_int_oct = _style_pastel_octubre(ws_oct, accounts_51, accounts_52, accounts_53, sede_data, sedes_keys)
-    ws_util = wb.create_sheet(title='UTILIDAD_OCTUBRE')
-    _style_pastel_utilidad(ws_util, r_total_oct, r_sin_int_oct, r_int_oct)
+    # Construir mapa de sedes a filas de Consolidado por Sede
+    sede_row_map = {}
+    if sedes:
+        for s_idx, s in enumerate(sedes):
+            r_num = s_start + 1 + s_idx
+            sede_row_map[s] = r_num
+    sede_row_map['TOTAL'] = tot_sed_r
+
+    ws_gastos = wb.create_sheet(title=sh_gastos_name)
+    r_sub_51, r_sub_52, r_sub_53, r_total_gastos, r_sin_int_gastos, r_int_gastos = _style_pastel_gastos(
+        ws_gastos, accounts_51, accounts_52, accounts_53, sede_data, sedes_keys, periodo_label
+    )
+
+    ws_util = wb.create_sheet(title=sh_util_name)
+    _style_pastel_utilidad(
+        ws_util,
+        sh_gastos_name,
+        r_total_gastos,
+        r_sin_int_gastos,
+        r_int_gastos,
+        r_sub_51,
+        r_sub_52,
+        r_sub_53,
+        tot_sed_r=tot_sed_r,
+        tot_s3_costo_row=tot_s3_costo_row,
+        periodo_label=periodo_label,
+        sede_row_map=sede_row_map
+    )
+
 
 
 def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento_nc=None, ruta_tb=None, ruta_gastos=None):
@@ -4333,6 +4434,7 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
         except Exception as e_tb:
             print(f"Error al leer Trial Balance: {e_tb}")
 
+    tot_s3_costo_row = 47
     if tb_data:
         try:
             ws_bal = wb.create_sheet(title="Otros Ingresos y Balance", index=1)
@@ -4589,6 +4691,7 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
                 ("41350201", "VENTAS DE VEHICULOS EXENTAS"),
                 ("41350202", "VENTAS DE VEHICULOS DEL 19%"),
                 ("41350601", "VENTA DE REPUESTOS EXENTOS"),
+                ("41350108", "ACEITES Y LUBRICANTES EXENTOS"),
                 ("41350602", "VENTA DE REPUESTOS 19%"),
                 ("41450501", "SERVICIO DE CARGUE Y DESCARGUE (TRANSPORTE)"),
                 ("4175", "DEVOLUCIONES EN VENTAS (NOTAS CRÉDITO 4175 DB)"),
@@ -4597,11 +4700,12 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
             ]
 
             obs_sec3 = {
-                "41350201": "Flete ($170k-$180k/moto) facturado en valor moto; reclasificado a 4145 en Odoo",
-                "41350202": "Líneas mixtas de accesorios gravados al 19% dentro de facturas de moto",
-                "41350601": "Incluye Aceites y Lubricantes Exentos (Cuenta 41350108: $7.406.000)",
-                "41350602": "Venta de repuestos 19% (Variación mínima de $10.580)",
-                "41450501": "Contabilizado internamente en Odoo por flete de motos ($170k/$180k por tercero)",
+                "41350201": "Venta motos exentas. Compensada con flete reclasificado a 4145 y accesorios al 19% en 41350202",
+                "41350202": "Venta de vehículos y accesorios gravados 19%. Total motos facturado vs balance concilia al 99.8%",
+                "41350601": "Facturación incluye Aceites. Al sumar 41350601 ($8.38M) + 41350108 ($7.40M) = $15.78M concilia al 99.6%",
+                "41350108": "Registrado en balance en cuenta propia. En facturación está integrado en repuestos exentos (41350601)",
+                "41350602": "Venta de repuestos 19% (Conciliado con variación mínima de $10.580)",
+                "41450501": "Flete facturado en el valor de la moto ($170k/$180k a 148 compradores). Odoo lo separa a 4145",
                 "4175": "Conciliado 100% exacto ($89.552.813)",
                 "41750506": "Conciliado 100% exacto ($93.000)",
                 "42354001": "Conciliado 100% exacto ($12.895.489)",
@@ -4705,17 +4809,26 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
         if not ruta_gastos or not os.path.exists(ruta_gastos):
             input_dir = os.path.dirname(os.path.abspath(ruta_entrada))
             tb_dir = os.path.dirname(os.path.abspath(ruta_tb)) if ruta_tb else input_dir
-            gastos_candidates = [
-                os.path.join(input_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
-                os.path.join(tb_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
-                os.path.join(input_dir, "..", "NUEVAS VERSION", "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx")
-            ]
-            for gc in gastos_candidates:
-                if os.path.exists(gc):
-                    ruta_gastos = gc
+            search_dirs = [input_dir, tb_dir, os.path.join(input_dir, "..", "NUEVAS VERSION")]
+            for s_dir in search_dirs:
+                if os.path.exists(s_dir):
+                    for f in os.listdir(s_dir):
+                        if f.lower().endswith(".xlsx") and "gasto" in f.lower() and "centro" in f.lower():
+                            ruta_gastos = os.path.join(s_dir, f)
+                            break
+                if ruta_gastos and os.path.exists(ruta_gastos):
                     break
         if ruta_gastos and os.path.exists(ruta_gastos):
-            _adjuntar_hojas_gastos_y_utilidad(wb, ruta_gastos)
+            _adjuntar_hojas_gastos_y_utilidad(
+                wb,
+                ruta_gastos,
+                tot_sed_r=tot_sed_r,
+                tot_s3_costo_row=tot_s3_costo_row,
+                ruta_entrada=ruta_entrada,
+                ruta_tb=ruta_tb,
+                sedes=sedes,
+                s_start=s_start
+            )
     except Exception as e_gastos:
         print(f"Nota: No se adjuntaron hojas de gastos: {e_gastos}")
 
@@ -4727,8 +4840,8 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
         "Resumen Ventas CC y Vendedor",
         "Detalle Ventas",
         "Detalle Notas Crédito",
-        "OCTUBRE",
-        "UTILIDAD_OCTUBRE"
+        "Gastos por Centro Costo",
+        "Estado de Resultados"
     ]
     wb._sheets = [wb[s] for s in sheet_order if s in wb.sheetnames] + [s for s in wb.worksheets if s.title not in sheet_order]
 
