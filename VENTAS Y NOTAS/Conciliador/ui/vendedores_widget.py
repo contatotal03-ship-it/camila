@@ -351,19 +351,21 @@ class InformeVentasWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, ruta_archivo, ruta_salida, ruta_asiento_nc=None, ruta_tb=None):
+    def __init__(self, ruta_archivo, ruta_salida, ruta_asiento_nc=None, ruta_tb=None, ruta_gastos=None):
         super().__init__()
         self.ruta_archivo = ruta_archivo
         self.ruta_salida = ruta_salida
         self.ruta_asiento_nc = ruta_asiento_nc
         self.ruta_tb = ruta_tb
+        self.ruta_gastos = ruta_gastos
 
     def run(self):
         try:
             stats = procesar_informe_ventas_asiento(
                 self.ruta_archivo, self.ruta_salida,
                 ruta_asiento_nc=self.ruta_asiento_nc,
-                ruta_tb=self.ruta_tb
+                ruta_tb=self.ruta_tb,
+                ruta_gastos=self.ruta_gastos
             )
             self.finished.emit(stats)
         except Exception as e:
@@ -380,6 +382,7 @@ class VendedoresWidget(QWidget):
         self.ruta_salida_nc = ""
         self.ruta_dian = ""
         self.ruta_tb = ""
+        self.ruta_gastos = ""
         self.init_ui()
 
     def init_ui(self):
@@ -505,6 +508,25 @@ class VendedoresWidget(QWidget):
         tb_row.addWidget(self.tb_file_path)
         tb_row.addWidget(self.tb_file_btn)
         input_card_layout.addLayout(tb_row)
+
+        gastos_row = QHBoxLayout()
+        gastos_row.setSpacing(10)
+        gastos_lbl = QLabel("Gastos CC:")
+        gastos_lbl.setStyleSheet("color: #ba68c8; font-size: 11px; font-weight: bold;")
+        gastos_lbl.setFixedWidth(100)
+        self.gastos_file_path = QLineEdit()
+        self.gastos_file_path.setReadOnly(True)
+        self.gastos_file_path.setPlaceholderText("Gastos por Centro de Costos / Sedes (opcional, para P&L y Hoja Octubre)...")
+        self.gastos_file_path.setMinimumHeight(32)
+        self.gastos_file_btn = QPushButton("  Examinar Gastos...  ")
+        self.gastos_file_btn.setProperty("class", "SecondaryButton")
+        self.gastos_file_btn.setMinimumHeight(32)
+        self.gastos_file_btn.setMinimumWidth(130)
+        self.gastos_file_btn.clicked.connect(self.cargar_archivo_gastos)
+        gastos_row.addWidget(gastos_lbl)
+        gastos_row.addWidget(self.gastos_file_path)
+        gastos_row.addWidget(self.gastos_file_btn)
+        input_card_layout.addLayout(gastos_row)
 
         root.addWidget(input_card)
         root.addSpacing(16)
@@ -691,7 +713,8 @@ class VendedoresWidget(QWidget):
             self.ruta_archivo,
             self.ruta_salida_ventas,
             ruta_asiento_nc=getattr(self, 'ruta_asiento_nc', None),
-            ruta_tb=getattr(self, 'ruta_tb', None)
+            ruta_tb=getattr(self, 'ruta_tb', None),
+            ruta_gastos=getattr(self, 'ruta_gastos', None)
         )
         self.thread_ventas.finished.connect(self.on_success_ventas)
         self.thread_ventas.error.connect(self.on_error_ventas)
@@ -926,6 +949,24 @@ class VendedoresWidget(QWidget):
                 "y la conciliación forense de diferencias."
             )
 
+    def cargar_archivo_gastos(self):
+        file, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar Gastos por Centro de Costo (con pestañas por sede)",
+            "",
+            "Archivos Excel (*.xlsx *.xls);;Todos los archivos (*)"
+        )
+        if file:
+            self.ruta_gastos = file
+            fname = os.path.basename(file)
+            self.gastos_file_path.setText(fname)
+            self.result_text.setPlainText(
+                f"📊 Gastos por Centro de Costo cargados: {fname}\n\n"
+                "• El sistema integrará las pestañas de sedes (Consolidado, San José, Granada Mobility, San Martín, Villavicencio, Puerto Inírida, Carreño, Granada TVS).\n"
+                "• Conciliará los gastos (Clase 5: Administrativos 51, Ventas 52, Financieros 53).\n"
+                "• Generará automáticamente las hojas 'OCTUBRE' y 'UTILIDAD_OCTUBRE' con diseño pastel ejecutivo y fórmulas vivas de Excel."
+            )
+
     def cargar_archivo_dian(self):
         file, _ = QFileDialog.getOpenFileName(
             self,
@@ -1046,8 +1087,10 @@ class VendedoresWidget(QWidget):
         self.ruta_salida_nc = ""
         self.ruta_dian = ""
         self.ruta_tb = ""
+        self.ruta_gastos = ""
         self.file_path.clear()
         self.tb_file_path.clear()
+        self.gastos_file_path.clear()
         self.ncc_file_path.clear()
         self.dian_file_path.clear()
         self.info_label.setText("")

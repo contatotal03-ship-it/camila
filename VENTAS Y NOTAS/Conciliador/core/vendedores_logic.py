@@ -3224,7 +3224,7 @@ def _adjuntar_hojas_gastos_y_utilidad(wb, ruta_gastos):
     _style_pastel_utilidad(ws_util, r_total_oct, r_sin_int_oct, r_int_oct)
 
 
-def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento_nc=None, ruta_tb=None):
+def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento_nc=None, ruta_tb=None, ruta_gastos=None):
     """
     Lee el archivo de Asiento Contable de Ventas (o informe de facturas emitidas),
     aplica la configuración dinámica de Vendedores Especiales (Repuestos y Jaime) por Centro de Costo,
@@ -4693,21 +4693,21 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
         print(f"Error al generar Hoja Separador y Operación: {e_sep}")
 
     # Orden gerencial de pestañas (Alta Gerencia primero)
-    # Auto-adjuntar hojas de Gastos y Utilidad por Centro de Costo si existe archivo en la carpeta
+    # Auto-adjuntar hojas de Gastos y Utilidad por Centro de Costo si existe archivo en la carpeta o fue seleccionado
     try:
-        input_dir = os.path.dirname(os.path.abspath(ruta_entrada))
-        tb_dir = os.path.dirname(os.path.abspath(ruta_tb)) if ruta_tb else input_dir
-        gastos_candidates = [
-            os.path.join(input_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
-            os.path.join(tb_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
-            os.path.join(input_dir, "..", "NUEVAS VERSION", "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx")
-        ]
-        ruta_gastos = None
-        for gc in gastos_candidates:
-            if os.path.exists(gc):
-                ruta_gastos = gc
-                break
-        if ruta_gastos:
+        if not ruta_gastos or not os.path.exists(ruta_gastos):
+            input_dir = os.path.dirname(os.path.abspath(ruta_entrada))
+            tb_dir = os.path.dirname(os.path.abspath(ruta_tb)) if ruta_tb else input_dir
+            gastos_candidates = [
+                os.path.join(input_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
+                os.path.join(tb_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
+                os.path.join(input_dir, "..", "NUEVAS VERSION", "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx")
+            ]
+            for gc in gastos_candidates:
+                if os.path.exists(gc):
+                    ruta_gastos = gc
+                    break
+        if ruta_gastos and os.path.exists(ruta_gastos):
             _adjuntar_hojas_gastos_y_utilidad(wb, ruta_gastos)
     except Exception as e_gastos:
         print(f"Nota: No se adjuntaron hojas de gastos: {e_gastos}")
