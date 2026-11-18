@@ -69,12 +69,36 @@ def build_exe_and_zip(version):
         except Exception:
             pass
         
+    py_dir = Path(sys.executable).parent
+    sys32 = Path("C:/Windows/System32")
+    vc_redist = BASE_DIR / "VC_redist.x64.exe"
+
+    candidate_dlls = [
+        py_dir / "vcruntime140.dll",
+        py_dir / "vcruntime140_1.dll",
+        py_dir / "python313.dll",
+        py_dir / "python3.dll",
+        sys32 / "msvcp140.dll",
+        sys32 / "msvcp140_1.dll",
+        sys32 / "msvcp140_2.dll",
+        sys32 / "msvcp140_atomic_wait.dll",
+        sys32 / "msvcp140_codecvt_ids.dll",
+        sys32 / "vccorlib140.dll",
+    ]
+    existing_dlls = [d for d in candidate_dlls if d.exists()]
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--clean",
         "--onefile",
         "--windowed",
+        "--noupx",
+    ]
+    for d in existing_dlls:
+        cmd.append(f"--add-binary={d};.")
+
+    cmd.extend([
         '--icon=ui/logo.ico' if (BASE_DIR / 'ui' / 'logo.ico').exists() else '--name=Conciliador_DIAN_vs_Sistema',
         "--name", "Conciliador_DIAN_vs_Sistema",
         "--add-data", "ui/styles.qss;ui/",
@@ -83,7 +107,7 @@ def build_exe_and_zip(version):
         "--add-data", "vendedores_config.json;.",
         "--collect-all", "certifi",
         "main.py"
-    ]
+    ])
     
     print(f"Ejecutando PyInstaller...")
     res = subprocess.run(cmd, cwd=str(BASE_DIR))
@@ -104,6 +128,27 @@ def build_exe_and_zip(version):
         src = BASE_DIR / opt_file
         if src.exists():
             shutil.copy2(src, rel_dir / opt_file)
+
+    # Copiar DLLs de runtime y dependencias de Windows en el paquete
+    for dll_f in existing_dlls:
+        shutil.copy2(dll_f, rel_dir / dll_f.name)
+
+    if vc_redist.exists():
+        shutil.copy2(vc_redist, rel_dir / vc_redist.name)
+
+    # Crear script de instalación de dependencias VC++
+    bat_vc = rel_dir / "INSTALAR_COMPONENTES_WINDOWS.bat"
+    bat_vc.write_text("""@echo off
+chcp 65001 > nul
+echo ============================================================
+echo   INSTALADOR DE COMPONENTES MICROSOFT VISUAL C++ (x64)
+echo   Camila Conciliador Financiero
+echo ============================================================
+echo Instalando librerias de runtime para Windows...
+"%~dp0VC_redist.x64.exe" /passive /norestart
+echo [OK] Componentes listos. Ya puedes iniciar Conciliador_DIAN_vs_Sistema.exe
+pause
+""", encoding="utf-8")
             
     # Comprimir ZIP
     print(f"Generando archivo ZIP comprimido: {zip_path.name}...")
@@ -251,6 +296,14 @@ def main():
         new_notes = input("Escribe nuevas notas (Enter para mantener las anteriores): ").strip()
         if not new_notes:
             new_notes = curr_notes
+
+    # Guardar version.json ANTES de compilar para que PyInstaller empaquete la versión correcta
+    v_data = {
+        "version": new_ver,
+        "release_notes": new_notes,
+        "download_url": f"https://github.com/{GITHUB_REPO}/releases/latest/download/Conciliador_DIAN_vs_Sistema.exe"
+    }
+    save_version_json(v_data)
             
     exe_path, zip_path = build_exe_and_zip(new_ver)
     if not exe_path:

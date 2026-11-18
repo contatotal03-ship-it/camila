@@ -410,6 +410,9 @@ if exist "{current_exe}" (
     goto loop
 )
 xcopy /s /e /y /q "{staging_dir}\\*" "{app_dir}\\" > nul
+if exist "{app_dir}\\VC_redist.x64.exe" (
+    start /wait "" "{app_dir}\\VC_redist.x64.exe" /quiet /norestart
+)
 start "" "{current_exe}"
 rd /s /q "{temp_dir}" > nul 2>&1
 del "%~f0" > nul

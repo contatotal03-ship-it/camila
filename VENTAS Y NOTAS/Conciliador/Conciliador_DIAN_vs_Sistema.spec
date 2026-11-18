@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('ui/styles.qss', 'ui/'), ('ui/logo.png', 'ui/'), ('version.json', '.'), ('vendedores_config.json', '.')]
-binaries = []
+binaries = [('C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python313\\vcruntime140.dll', '.'), ('C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python313\\vcruntime140_1.dll', '.'), ('C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python313\\python313.dll', '.'), ('C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python313\\python3.dll', '.'), ('C:\\Windows\\System32\\msvcp140.dll', '.'), ('C:\\Windows\\System32\\msvcp140_1.dll', '.'), ('C:\\Windows\\System32\\msvcp140_2.dll', '.'), ('C:\\Windows\\System32\\msvcp140_atomic_wait.dll', '.'), ('C:\\Windows\\System32\\msvcp140_codecvt_ids.dll', '.'), ('C:\\Windows\\System32\\vccorlib140.dll', '.')]
 hiddenimports = []
 tmp_ret = collect_all('certifi')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -33,7 +33,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
