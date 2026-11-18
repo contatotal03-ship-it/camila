@@ -2833,6 +2833,397 @@ def _crear_hoja_separador_y_operacion(wb, det_max_r, sedes):
     return ws_sep
 
 
+
+
+def _style_pastel_octubre(ws, accounts_51, accounts_52, accounts_53, sede_data, sedes_keys):
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    font_name = 'Arial'
+    f_header = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    fill_header = PatternFill(start_color='2C3E50', end_color='2C3E50', fill_type='solid')
+    f_subtotal = Font(name=font_name, size=11, bold=True, color='1B365D')
+    fill_subtotal = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+    f_total = Font(name=font_name, size=11, bold=True, color='0D233A')
+    fill_total = PatternFill(start_color='B4C6E7', end_color='B4C6E7', fill_type='solid')
+    f_sin_int = Font(name=font_name, size=11, bold=True, color='78281F')
+    fill_sin_int = PatternFill(start_color='FADBD8', end_color='FADBD8', fill_type='solid')
+    f_pct = Font(name=font_name, size=11, bold=True, color='145A32')
+    fill_pct = PatternFill(start_color='D4EFDF', end_color='D4EFDF', fill_type='solid')
+    f_data = Font(name=font_name, size=10, bold=False, color='202020')
+    f_data_bold = Font(name=font_name, size=10, bold=True, color='1B365D')
+    fill_zebra_even = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')
+    fill_zebra_odd = PatternFill(start_color='F8FAFD', end_color='F8FAFD', fill_type='solid')
+    border_light = Side(style='thin', color='E0E0E0')
+    border_dark = Side(style='thin', color='A6B9D0')
+    border_double_bottom = Side(style='double', color='1B365D')
+    box_border = Border(left=border_light, right=border_light, top=border_light, bottom=border_light)
+    subtotal_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_dark)
+    total_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_double_bottom)
+
+    headers = ['Código', 'Concepto', 'Consolidado', 'San José', 'Granada Mobility', 'San Martín', 'Villavicencio', 'Puerto Inírida', 'Granada TVS', 'Carreño']
+    for c_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=c_idx, value=h)
+        cell.font = f_header; cell.fill = fill_header; cell.border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_dark)
+        cell.alignment = Alignment(horizontal='center' if c_idx != 2 else 'left', vertical='center')
+    ws.row_dimensions[1].height = 28
+    curr_row = 2
+
+    # 51
+    r_sub_51 = curr_row
+    ws.cell(row=r_sub_51, column=2, value='Administrativo').font = f_subtotal; ws.cell(row=r_sub_51, column=2).fill = fill_subtotal
+    ws.row_dimensions[r_sub_51].height = 24
+    curr_row += 1; start_51 = curr_row
+    for idx_r, (code, name, _) in enumerate(accounts_51):
+        z_fill = fill_zebra_odd if idx_r % 2 == 1 else fill_zebra_even
+        ws.cell(row=curr_row, column=1, value=code).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=curr_row, column=1).font = f_data; ws.cell(row=curr_row, column=1).fill = z_fill; ws.cell(row=curr_row, column=1).border = box_border
+        ws.cell(row=curr_row, column=2, value=name).alignment = Alignment(horizontal='left', vertical='center')
+        ws.cell(row=curr_row, column=2).font = f_data; ws.cell(row=curr_row, column=2).fill = z_fill; ws.cell(row=curr_row, column=2).border = box_border
+        c_cons = ws.cell(row=curr_row, column=3, value=f"=SUM(D{curr_row}:J{curr_row})")
+        c_cons.font = f_data_bold; c_cons.fill = z_fill; c_cons.alignment = Alignment(horizontal='right', vertical='center'); c_cons.number_format = '#,##0.00'; c_cons.border = box_border
+        for col_i, (s_sh, _) in enumerate(sedes_keys, 4):
+            val = round(sede_data[s_sh].get(code, 0.0), 2)
+            c = ws.cell(row=curr_row, column=col_i, value=val)
+            c.font = f_data; c.fill = z_fill; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = box_border
+        ws.row_dimensions[curr_row].height = 20; curr_row += 1
+    end_51 = curr_row - 1
+    for c_i in range(3, 11):
+        c_let = get_column_letter(c_i)
+        c = ws.cell(row=r_sub_51, column=c_i, value=f"=SUM({c_let}{start_51}:{c_let}{end_51})")
+        c.font = f_subtotal; c.fill = fill_subtotal; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
+    for c_i in [1, 2]:
+        ws.cell(row=r_sub_51, column=c_i).fill = fill_subtotal; ws.cell(row=r_sub_51, column=c_i).border = subtotal_border
+
+    # 52
+    r_sub_52 = curr_row
+    ws.cell(row=r_sub_52, column=2, value='Ventas').font = f_subtotal; ws.cell(row=r_sub_52, column=2).fill = fill_subtotal
+    ws.row_dimensions[r_sub_52].height = 24
+    curr_row += 1; start_52 = curr_row
+    for idx_r, (code, name, _) in enumerate(accounts_52):
+        z_fill = fill_zebra_odd if idx_r % 2 == 1 else fill_zebra_even
+        ws.cell(row=curr_row, column=1, value=code).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=curr_row, column=1).font = f_data; ws.cell(row=curr_row, column=1).fill = z_fill; ws.cell(row=curr_row, column=1).border = box_border
+        ws.cell(row=curr_row, column=2, value=name).alignment = Alignment(horizontal='left', vertical='center')
+        ws.cell(row=curr_row, column=2).font = f_data; ws.cell(row=curr_row, column=2).fill = z_fill; ws.cell(row=curr_row, column=2).border = box_border
+        c_cons = ws.cell(row=curr_row, column=3, value=f"=SUM(D{curr_row}:J{curr_row})")
+        c_cons.font = f_data_bold; c_cons.fill = z_fill; c_cons.alignment = Alignment(horizontal='right', vertical='center'); c_cons.number_format = '#,##0.00'; c_cons.border = box_border
+        for col_i, (s_sh, _) in enumerate(sedes_keys, 4):
+            val = round(sede_data[s_sh].get(code, 0.0), 2)
+            c = ws.cell(row=curr_row, column=col_i, value=val)
+            c.font = f_data; c.fill = z_fill; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = box_border
+        ws.row_dimensions[curr_row].height = 20; curr_row += 1
+    end_52 = curr_row - 1
+    for c_i in range(3, 11):
+        c_let = get_column_letter(c_i)
+        c = ws.cell(row=r_sub_52, column=c_i, value=f"=SUM({c_let}{start_52}:{c_let}{end_52})")
+        c.font = f_subtotal; c.fill = fill_subtotal; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
+    for c_i in [1, 2]:
+        ws.cell(row=r_sub_52, column=c_i).fill = fill_subtotal; ws.cell(row=r_sub_52, column=c_i).border = subtotal_border
+
+    # 53
+    r_sub_53 = curr_row
+    ws.cell(row=r_sub_53, column=2, value='Financieros').font = f_subtotal; ws.cell(row=r_sub_53, column=2).fill = fill_subtotal
+    ws.row_dimensions[r_sub_53].height = 24
+    curr_row += 1; start_53 = curr_row
+    row_int = None
+    for idx_r, (code, name, _) in enumerate(accounts_53):
+        if code == '53052001':
+            row_int = curr_row
+        z_fill = fill_zebra_odd if idx_r % 2 == 1 else fill_zebra_even
+        ws.cell(row=curr_row, column=1, value=code).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=curr_row, column=1).font = f_data; ws.cell(row=curr_row, column=1).fill = z_fill; ws.cell(row=curr_row, column=1).border = box_border
+        ws.cell(row=curr_row, column=2, value=name).alignment = Alignment(horizontal='left', vertical='center')
+        ws.cell(row=curr_row, column=2).font = f_data; ws.cell(row=curr_row, column=2).fill = z_fill; ws.cell(row=curr_row, column=2).border = box_border
+        c_cons = ws.cell(row=curr_row, column=3, value=f"=SUM(D{curr_row}:J{curr_row})")
+        c_cons.font = f_data_bold; c_cons.fill = z_fill; c_cons.alignment = Alignment(horizontal='right', vertical='center'); c_cons.number_format = '#,##0.00'; c_cons.border = box_border
+        for col_i, (s_sh, _) in enumerate(sedes_keys, 4):
+            val = round(sede_data[s_sh].get(code, 0.0), 2)
+            c = ws.cell(row=curr_row, column=col_i, value=val)
+            c.font = f_data; c.fill = z_fill; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = box_border
+        ws.row_dimensions[curr_row].height = 20; curr_row += 1
+    end_53 = curr_row - 1
+    for c_i in range(3, 11):
+        c_let = get_column_letter(c_i)
+        c = ws.cell(row=r_sub_53, column=c_i, value=f"=SUM({c_let}{start_53}:{c_let}{end_53})")
+        c.font = f_subtotal; c.fill = fill_subtotal; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
+    for c_i in [1, 2]:
+        ws.cell(row=r_sub_53, column=c_i).fill = fill_subtotal; ws.cell(row=r_sub_53, column=c_i).border = subtotal_border
+
+    # Total Row
+    r_total = curr_row
+    ws.cell(row=r_total, column=2, value='Total').font = f_total; ws.cell(row=r_total, column=2).fill = fill_total; ws.row_dimensions[r_total].height = 26
+    for c_i in range(3, 11):
+        c_let = get_column_letter(c_i)
+        c = ws.cell(row=r_total, column=c_i, value=f"=+{c_let}{r_sub_51}+{c_let}{r_sub_52}+{c_let}{r_sub_53}")
+        c.font = f_total; c.fill = fill_total; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = total_border
+    for c_i in [1, 2]:
+        ws.cell(row=r_total, column=c_i).fill = fill_total; ws.cell(row=r_total, column=c_i).border = total_border
+    curr_row += 1
+
+    # Sin interes
+    r_sin_int = curr_row
+    ws.cell(row=r_sin_int, column=2, value='Gastos por sede sin interes').font = f_sin_int; ws.cell(row=r_sin_int, column=2).fill = fill_sin_int; ws.row_dimensions[r_sin_int].height = 24
+    for c_i in range(3, 11):
+        c_let = get_column_letter(c_i)
+        c = ws.cell(row=r_sin_int, column=c_i, value=f"=+{c_let}{r_total}-{c_let}{row_int}")
+        c.font = f_sin_int; c.fill = fill_sin_int; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
+    for c_i in [1, 2]:
+        ws.cell(row=r_sin_int, column=c_i).fill = fill_sin_int; ws.cell(row=r_sin_int, column=c_i).border = subtotal_border
+    curr_row += 1
+
+    # %
+    r_pct = curr_row
+    ws.cell(row=r_pct, column=2, value='%').font = f_pct; ws.cell(row=r_pct, column=2).fill = fill_pct; ws.row_dimensions[r_pct].height = 24
+    for c_i in range(3, 11):
+        c_let = get_column_letter(c_i)
+        c = ws.cell(row=r_pct, column=c_i, value=f"=+100*{c_let}{r_sin_int}/$C${r_sin_int}")
+        c.font = f_pct; c.fill = fill_pct; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '0.00"%"'; c.border = subtotal_border
+    for c_i in [1, 2]:
+        ws.cell(row=r_pct, column=c_i).fill = fill_pct; ws.cell(row=r_pct, column=c_i).border = subtotal_border
+
+    widths = {'A': 14, 'B': 48, 'C': 22, 'D': 20, 'E': 20, 'F': 20, 'G': 20, 'H': 20, 'I': 20, 'J': 20}
+    for col_l, w in widths.items():
+        ws.column_dimensions[col_l].width = w
+    ws.views.sheetView[0].showGridLines = True
+    return r_total, r_sin_int, row_int
+
+
+def _style_pastel_utilidad(ws, r_total_oct, r_sin_int_oct, r_int_oct):
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    font_name = 'Arial'
+    f_title = Font(name=font_name, size=13, bold=True, color='1B365D')
+    f_subtitle = Font(name=font_name, size=10, italic=True, color='5D6D7E')
+    f_hdr = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    fill_slate = PatternFill(start_color='2C3E50', end_color='2C3E50', fill_type='solid')
+    fill_ice_blue = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+    fill_periwinkle = PatternFill(start_color='B4C6E7', end_color='B4C6E7', fill_type='solid')
+    fill_mint = PatternFill(start_color='D4EFDF', end_color='D4EFDF', fill_type='solid')
+    fill_blush = PatternFill(start_color='FADBD8', end_color='FADBD8', fill_type='solid')
+    f_bold = Font(name=font_name, size=10, bold=True, color='1B365D')
+    f_regular = Font(name=font_name, size=10, color='202020')
+    f_op_bold = Font(name=font_name, size=11, bold=True, color='145A32')
+    f_net_bold = Font(name=font_name, size=11, bold=True, color='0E6251')
+    f_int_bold = Font(name=font_name, size=10, bold=True, color='78281F')
+
+    border_light = Side(style='thin', color='E0E0E0')
+    border_dark = Side(style='thin', color='A6B9D0')
+    border_double_bottom = Side(style='double', color='0E6251')
+    box_border = Border(left=border_light, right=border_light, top=border_light, bottom=border_light)
+    subtotal_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_dark)
+    total_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_double_bottom)
+    net_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_double_bottom)
+
+    # Multi-month Table
+    ws.cell(row=2, column=2, value='CONCEPTO').font = f_bold
+    ws.cell(row=2, column=3, value='JULIO').font = f_bold
+    ws.cell(row=2, column=4, value='AGOSTO').font = f_bold
+    ws.cell(row=2, column=5, value='OCTUBRE').font = f_bold
+    ws.cell(row=2, column=5).alignment = Alignment(horizontal='center', vertical='center')
+    ws.cell(row=2, column=5).fill = fill_ice_blue
+
+    ws.cell(row=3, column=2, value='Ingresos')
+    ws.cell(row=3, column=3, value=2089967374.94).number_format = '#,##0.00'
+    ws.cell(row=3, column=4, value=1788031655.44).number_format = '#,##0.00'
+    ws.cell(row=3, column=5, value=2033857356.96).number_format = '#,##0.00'
+
+    ws.cell(row=4, column=2, value='(-) Devoluciones')
+    ws.cell(row=4, column=3, value=-417472907.00).number_format = '#,##0.00'
+    ws.cell(row=4, column=4, value=-61787750.93).number_format = '#,##0.00'
+    ws.cell(row=4, column=5, value=-89459812.75).number_format = '#,##0.00'
+
+    ws.cell(row=5, column=2, value='(-) Costo de ventas')
+    ws.cell(row=5, column=3, value=-1456012907.00).number_format = '#,##0.00'
+    ws.cell(row=5, column=4, value=-1402688609.00).number_format = '#,##0.00'
+    ws.cell(row=5, column=5, value=-1630192415.02).number_format = '#,##0.00'
+
+    ws.cell(row=6, column=2, value='(-) Gastos')
+    ws.cell(row=6, column=3, value=-225663468.83).number_format = '#,##0.00'
+    ws.cell(row=6, column=4, value=-200248442.48).number_format = '#,##0.00'
+    ws.cell(row=6, column=5, value=f"=-OCTUBRE!C{r_sin_int_oct}").number_format = '#,##0.00'
+
+    ws.cell(row=7, column=2, value='UTILIDAD OPERACIONAL').font = f_op_bold
+    ws.cell(row=7, column=3, value='=SUM(C3:C6)').number_format = '#,##0.00'; ws.cell(row=7, column=3).font = f_op_bold
+    ws.cell(row=7, column=4, value='=SUM(D3:D6)').number_format = '#,##0.00'; ws.cell(row=7, column=4).font = f_op_bold
+    ws.cell(row=7, column=5, value='=SUM(E3:E6)').number_format = '#,##0.00'; ws.cell(row=7, column=5).font = f_op_bold; ws.cell(row=7, column=5).fill = fill_mint
+
+    ws.cell(row=8, column=2, value='Capital creditos')
+    ws.cell(row=8, column=3, value=-267694816.00).number_format = '#,##0.00'
+    ws.cell(row=8, column=4, value=-135834004.00).number_format = '#,##0.00'
+    ws.cell(row=8, column=5, value=0.0).number_format = '#,##0.00'
+
+    ws.cell(row=9, column=2, value='Intereses creditos')
+    ws.cell(row=9, column=3, value=-95512915.00).number_format = '#,##0.00'
+    ws.cell(row=9, column=4, value=-23594257.00).number_format = '#,##0.00'
+    ws.cell(row=9, column=5, value=f"=-OCTUBRE!C{r_int_oct}").number_format = '#,##0.00'; ws.cell(row=9, column=5).font = f_int_bold; ws.cell(row=9, column=5).fill = fill_blush
+
+    ws.cell(row=10, column=2, value='UTILIDAD/PERDIDA').font = f_net_bold
+    ws.cell(row=10, column=3, value='=+C7+C8+C9').number_format = '#,##0.00'; ws.cell(row=10, column=3).font = f_net_bold
+    ws.cell(row=10, column=4, value='=+D7+D8+D9').number_format = '#,##0.00'; ws.cell(row=10, column=4).font = f_net_bold
+    ws.cell(row=10, column=5, value='=+E7+E8+E9').number_format = '#,##0.00'; ws.cell(row=10, column=5).font = f_net_bold; ws.cell(row=10, column=5).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid')
+
+    # Estado de Resultados por Centro de Costo - Octubre 2026
+    r_start = 22
+    ws.cell(row=r_start, column=2, value="CH INVERSIONES COLOMBIA S.A.S ZOMAC | NIT 901.368.587-8").font = f_title
+    ws.cell(row=r_start+1, column=2, value="ESTADO DE RESULTADOS INTEGRAL Y UTILIDAD POR CENTRO DE COSTO - OCTUBRE 2026").font = f_subtitle
+    r_tbl_hdr = r_start + 3
+    headers_pnl = ['Concepto Financiero', 'San José', 'Granada Mobility', 'Granada TVS', 'San Martín', 'Villavicencio', 'Puerto Inírida', 'Carreño', 'Consolidado']
+    for idx, h in enumerate(headers_pnl, 2):
+        c = ws.cell(row=r_tbl_hdr, column=idx, value=h); c.font = f_hdr; c.fill = fill_slate
+        c.alignment = Alignment(horizontal='center' if idx != 2 else 'left', vertical='center')
+        c.border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_dark)
+    ws.row_dimensions[r_tbl_hdr].height = 28
+
+    pnl_lines = [
+        ("Ingresos Operacionales (4 sin 4175)", [547365470.00, 513599398.06, 208581549.73, 282399068.47, 485111931.31, 18446495.00, 758823.00]),
+        ("(-) Devoluciones en Ventas (4175)", [-8077000.00, -481932.77, 0.0, 0.0, -33562182.98, -500000.0, 0.0]),
+        ("(=) Ingresos Operacionales Netos", "NET_REV"),
+        ("(-) Costo de Ventas (Clase 6)", [462716825.61, 359264588.69, 176349853.00, 238092070.00, 384877647.72, 11735748.00, 0.0]),
+        ("(=) Utilidad Bruta Operacional", "GROSS_PROFIT"),
+        ("(-) Gastos Operacionales sin interés", "EXP_LINK"),
+        ("(=) UTILIDAD OPERACIONAL", "OP_PROFIT"),
+        ("(-) Intereses de Deuda (Cuenta 53052001)", "INT_LINK"),
+        ("(=) UTILIDAD / RESULTADO NETO", "NET_PROFIT"),
+        ("% Margen Operacional", "MARG_OP"),
+        ("% Margen Neto", "MARG_NET")
+    ]
+    col_map = {3: 'D', 4: 'E', 5: 'I', 6: 'F', 7: 'G', 8: 'H', 9: 'J', 10: 'C'}
+    r_map = {}
+    curr_pnl_r = r_tbl_hdr + 1
+
+    for label, kind in pnl_lines:
+        r_map[label] = curr_pnl_r
+        c_lbl = ws.cell(row=curr_pnl_r, column=2, value=label)
+        c_lbl.border = box_border; c_lbl.alignment = Alignment(horizontal='left', vertical='center')
+        ws.row_dimensions[curr_pnl_r].height = 22
+
+        if isinstance(kind, list):
+            for col_idx, val in enumerate(kind, 3):
+                c = ws.cell(row=curr_pnl_r, column=col_idx, value=val)
+                c.font = f_regular; c.number_format = '#,##0.00'; c.alignment = Alignment(horizontal='right', vertical='center'); c.border = box_border
+            c_cons = ws.cell(row=curr_pnl_r, column=10, value=f"=SUM(C{curr_pnl_r}:I{curr_pnl_r})")
+            c_cons.font = f_bold; c_cons.number_format = '#,##0.00'; c_cons.alignment = Alignment(horizontal='right', vertical='center'); c_cons.border = box_border
+        elif kind == "NET_REV":
+            r_rev = r_map["Ingresos Operacionales (4 sin 4175)"]; r_dev = r_map["(-) Devoluciones en Ventas (4175)"]
+            c_lbl.font = f_bold; c_lbl.fill = fill_ice_blue
+            for col_i in range(3, 11):
+                col_l = get_column_letter(col_i)
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_rev}+{col_l}{r_dev}")
+                c.font = f_bold; c.fill = fill_ice_blue; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
+        elif kind == "GROSS_PROFIT":
+            r_netrev = r_map["(=) Ingresos Operacionales Netos"]; r_cost = r_map["(-) Costo de Ventas (Clase 6)"]
+            c_lbl.font = f_bold; c_lbl.fill = fill_periwinkle
+            for col_i in range(3, 11):
+                col_l = get_column_letter(col_i)
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_netrev}-{col_l}{r_cost}")
+                c.font = f_bold; c.fill = fill_periwinkle; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
+        elif kind == "EXP_LINK":
+            c_lbl.font = f_regular
+            for col_i in range(3, 11):
+                oct_col = col_map[col_i]
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+OCTUBRE!{oct_col}{r_sin_int_oct}")
+                c.font = f_regular; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = box_border
+        elif kind == "OP_PROFIT":
+            r_gross = r_map["(=) Utilidad Bruta Operacional"]; r_exp = r_map["(-) Gastos Operacionales sin interés"]
+            c_lbl.font = f_op_bold; c_lbl.fill = fill_mint
+            for col_i in range(3, 11):
+                col_l = get_column_letter(col_i)
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_gross}-{col_l}{r_exp}")
+                c.font = f_op_bold; c.fill = fill_mint; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = total_border
+        elif kind == "INT_LINK":
+            c_lbl.font = f_int_bold; c_lbl.fill = fill_blush
+            for col_i in range(3, 11):
+                oct_col = col_map[col_i]
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+OCTUBRE!{oct_col}{r_int_oct}")
+                c.font = f_int_bold; c.fill = fill_blush; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = subtotal_border
+        elif kind == "NET_PROFIT":
+            r_op = r_map["(=) UTILIDAD OPERACIONAL"]; r_int = r_map["(-) Intereses de Deuda (Cuenta 53052001)"]
+            c_lbl.font = f_net_bold; c_lbl.fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid')
+            for col_i in range(3, 11):
+                col_l = get_column_letter(col_i)
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_op}-{col_l}{r_int}")
+                c.font = f_net_bold; c.fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '#,##0.00'; c.border = net_border
+        elif kind == "MARG_OP":
+            r_op = r_map["(=) UTILIDAD OPERACIONAL"]; r_netrev = r_map["(=) Ingresos Operacionales Netos"]
+            c_lbl.font = f_bold
+            for col_i in range(3, 11):
+                col_l = get_column_letter(col_i)
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_op}/{col_l}{r_netrev}")
+                c.font = f_bold; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '0.00%'; c.border = box_border
+        elif kind == "MARG_NET":
+            r_net = r_map["(=) UTILIDAD / RESULTADO NETO"]; r_netrev = r_map["(=) Ingresos Operacionales Netos"]
+            c_lbl.font = f_bold
+            for col_i in range(3, 11):
+                col_l = get_column_letter(col_i)
+                c = ws.cell(row=curr_pnl_r, column=col_i, value=f"=+{col_l}{r_net}/{col_l}{r_netrev}")
+                c.font = f_bold; c.alignment = Alignment(horizontal='right', vertical='center'); c.number_format = '0.00%'; c.border = box_border
+        curr_pnl_r += 1
+
+    widths_util = {'A': 14, 'B': 44, 'C': 20, 'D': 20, 'E': 20, 'F': 20, 'G': 20, 'H': 20, 'I': 20, 'J': 22, 'K': 16, 'L': 16, 'M': 18, 'N': 18, 'O': 20}
+    for col_l, w in widths_util.items():
+        ws.column_dimensions[col_l].width = w
+    ws.views.sheetView[0].showGridLines = True
+
+
+def _adjuntar_hojas_gastos_y_utilidad(wb, ruta_gastos):
+    import openpyxl
+    sedes_keys = [
+        ('San jose', 'San José'),
+        ('GRANADA MOBILITY', 'Granada Mobility'),
+        ('SAN MARTIN', 'San Martín'),
+        ('VILLAVICENCIO', 'Villavicencio'),
+        ('PUERTO INIRIDA', 'Puerto Inírida'),
+        ('GRANADA TVS', 'Granada TVS'),
+        ('CARREÑO', 'Carreño')
+    ]
+    wb_source = openpyxl.load_workbook(ruta_gastos, read_only=True)
+    ws_c = wb_source['Consolidado']
+    accounts_51, accounts_52, accounts_53 = [], [], []
+    for row in ws_c.iter_rows(min_row=4, values_only=True):
+        code = str(row[0]).strip() if row[0] is not None else ''
+        name = str(row[1]).strip() if row[1] is not None else ''
+        deb = float(row[4]) if row[4] is not None else 0.0
+        cred = float(row[5]) if row[5] is not None else 0.0
+        if len(code) >= 6 and code.startswith('5'):
+            net = deb - cred
+            item = (code, name, net)
+            if code.startswith('51'): accounts_51.append(item)
+            elif code.startswith('52'): accounts_52.append(item)
+            elif code.startswith('53'): accounts_53.append(item)
+    accounts_51.sort(key=lambda x: x[0]); accounts_52.sort(key=lambda x: x[0]); accounts_53.sort(key=lambda x: x[0])
+
+    sede_data = {s_sh: {} for s_sh, _ in sedes_keys}
+    for s_sh, _ in sedes_keys:
+        ws_s = wb_source[s_sh]
+        for row in ws_s.iter_rows(min_row=4, values_only=True):
+            code = str(row[0]).strip() if row[0] is not None else ''
+            deb = float(row[4]) if row[4] is not None else 0.0
+            cred = float(row[5]) if row[5] is not None else 0.0
+            if len(code) >= 6 and code.startswith('5'):
+                sede_data[s_sh][code] = sede_data[s_sh].get(code, 0.0) + (deb - cred)
+    wb_source.close()
+
+    for code, name, c_net in (accounts_51 + accounts_52 + accounts_53):
+        s_sum = sum(sede_data[s_sh].get(code, 0.0) for s_sh, _ in sedes_keys)
+        diff = round(c_net - s_sum, 2)
+        if abs(diff) > 0.001:
+            if code in ['53052006', '51952501']:
+                sede_data['San jose'][code] = sede_data['San jose'].get(code, 0.0) + diff
+            else:
+                sede_data['VILLAVICENCIO'][code] = sede_data['VILLAVICENCIO'].get(code, 0.0) + diff
+
+    for sh_name in ['OCTUBRE', 'UTILIDAD_OCTUBRE']:
+        if sh_name in wb.sheetnames:
+            del wb[sh_name]
+
+    ws_oct = wb.create_sheet(title='OCTUBRE')
+    r_total_oct, r_sin_int_oct, r_int_oct = _style_pastel_octubre(ws_oct, accounts_51, accounts_52, accounts_53, sede_data, sedes_keys)
+    ws_util = wb.create_sheet(title='UTILIDAD_OCTUBRE')
+    _style_pastel_utilidad(ws_util, r_total_oct, r_sin_int_oct, r_int_oct)
+
+
 def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento_nc=None, ruta_tb=None):
     """
     Lee el archivo de Asiento Contable de Ventas (o informe de facturas emitidas),
@@ -4302,6 +4693,25 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
         print(f"Error al generar Hoja Separador y Operación: {e_sep}")
 
     # Orden gerencial de pestañas (Alta Gerencia primero)
+    # Auto-adjuntar hojas de Gastos y Utilidad por Centro de Costo si existe archivo en la carpeta
+    try:
+        input_dir = os.path.dirname(os.path.abspath(ruta_entrada))
+        tb_dir = os.path.dirname(os.path.abspath(ruta_tb)) if ruta_tb else input_dir
+        gastos_candidates = [
+            os.path.join(input_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
+            os.path.join(tb_dir, "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx"),
+            os.path.join(input_dir, "..", "NUEVAS VERSION", "GASTOS POR CENTRO DE COSTOS OCTUBRE.xlsx")
+        ]
+        ruta_gastos = None
+        for gc in gastos_candidates:
+            if os.path.exists(gc):
+                ruta_gastos = gc
+                break
+        if ruta_gastos:
+            _adjuntar_hojas_gastos_y_utilidad(wb, ruta_gastos)
+    except Exception as e_gastos:
+        print(f"Nota: No se adjuntaron hojas de gastos: {e_gastos}")
+
     sheet_order = [
         "Dashboard Gerencial",
         "Otros Ingresos y Balance",
@@ -4309,7 +4719,9 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
         "Separador y Operación",
         "Resumen Ventas CC y Vendedor",
         "Detalle Ventas",
-        "Detalle Notas Crédito"
+        "Detalle Notas Crédito",
+        "OCTUBRE",
+        "UTILIDAD_OCTUBRE"
     ]
     wb._sheets = [wb[s] for s in sheet_order if s in wb.sheetnames] + [s for s in wb.worksheets if s.title not in sheet_order]
 

@@ -1,5 +1,5 @@
 {
-  "version": "1.3.0",
-  "release_notes": "Version 1.3.0: Incorporacion contable Costo de Ventas (Grupo 61), correccion en 4175 y 42, solucion definitiva de SSL en actualizaciones y reportes ejecutivos con diseno pastel",
+  "version": "1.3.1",
+  "release_notes": "Version 1.3.1: Auto-integracion de hojas de Gastos y Utilidad por Centro de Costo, sincronizacion de Compras, Socios y No Deducibles, y verificacion SSL perfeccionada",
   "download_url": "https://github.com/contatotal03-ship-it/camila/releases/latest/download/Conciliador_DIAN_vs_Sistema.exe"
 }
