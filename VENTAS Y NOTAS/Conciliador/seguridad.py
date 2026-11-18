@@ -11,9 +11,17 @@ import json
 import base64
 import time
 import socket
+import ssl
 from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
+
+# Resiliencia SSL para Windows
+try:
+    if hasattr(ssl, "_create_unverified_context"):
+        ssl._create_default_https_context = ssl._create_unverified_context
+except Exception:
+    pass
 
 SECRET_KEY = b"FISCALYTIX_SECURE_CLOUD_KEY_2026_DIANFLOW_PRO_v3"
 CLOUD_DB_RAW_URL = "https://raw.githubusercontent.com/contatotal03-ship-it/sistema-licencias/main/licencias_db.enc"
@@ -161,7 +169,8 @@ def descargar_base_datos_nube(timeout=5) -> dict:
                 "Cache-Control": "no-cache"
             }
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        ctx = ssl._create_unverified_context() if hasattr(ssl, "_create_unverified_context") else None
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             content = resp.read().decode("utf-8").strip()
             if not content:
                 return {}

@@ -30,7 +30,7 @@ if exist "Conciliador_Release" rmdir /s /q "Conciliador_Release"
 
 echo.
 echo [*] 2. Compilando Conciliador_DIAN_vs_Sistema.exe con PyInstaller...
-"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --icon="ui/logo.ico" --name "Conciliador_DIAN_vs_Sistema" --add-data "ui/styles.qss;ui/" --add-data "ui/logo.png;ui/" --add-data "version.json;." main.py
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --icon="ui/logo.ico" --name "Conciliador_DIAN_vs_Sistema" --add-data "ui/styles.qss;ui/" --add-data "ui/logo.png;ui/" --add-data "version.json;." --add-data "vendedores_config.json;." --collect-all certifi main.py
 
 if not exist "dist\Conciliador_DIAN_vs_Sistema.exe" (
     echo.

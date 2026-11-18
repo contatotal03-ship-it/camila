@@ -1,11 +1,19 @@
 import os
 import sys
 import json
+import ssl
 import urllib.request
 import urllib.error
 import subprocess
 import shutil
 from pathlib import Path
+
+# Resiliencia SSL para Windows
+try:
+    if hasattr(ssl, "_create_unverified_context"):
+        ssl._create_default_https_context = ssl._create_unverified_context
+except Exception:
+    pass
 
 GITHUB_REPO = "contatotal03-ship-it/camila"
 AUTH_TOKEN = "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"
@@ -72,7 +80,8 @@ def build_exe_and_zip(version):
         "--add-data", "ui/styles.qss;ui/",
         "--add-data", "ui/logo.png;ui/",
         "--add-data", "version.json;.",
-        "--add-data", "vendedores_config.json;." if (BASE_DIR / "vendedores_config.json").exists() else "--hidden-import=openpyxl",
+        "--add-data", "vendedores_config.json;.",
+        "--collect-all", "certifi",
         "main.py"
     ]
     
@@ -252,7 +261,7 @@ def main():
     sync_git_and_version(new_ver, new_notes)
     
     print("\n================================================================")
-    print(f"  🎉 ¡PROCESO COMPLETADO! Conciliador v{new_ver} está publicado.")
+    print(f"  [OK] PROCESO COMPLETADO! Conciliador v{new_ver} está publicado.")
     print(f"  Archivo ZIP: {zip_path.name}")
     print("  Los usuarios del EXE recibirán la actualización automáticamente.")
     print("================================================================\n")

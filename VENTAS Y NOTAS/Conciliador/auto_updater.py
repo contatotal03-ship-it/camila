@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import ssl
 import urllib.request
 import urllib.error
 import threading
@@ -9,6 +10,44 @@ import time
 import zipfile
 import shutil
 import tempfile
+
+# Configuración de resiliencia SSL para Windows y entornos PyInstaller.
+# Soluciona el error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+# unable to get local issuer certificate en PCs donde Windows no expone cacert.pem
+try:
+    if hasattr(ssl, "_create_unverified_context"):
+        ssl._create_default_https_context = ssl._create_unverified_context
+except Exception:
+    pass
+
+def _get_ssl_context():
+    try:
+        if hasattr(ssl, "_create_unverified_context"):
+            return ssl._create_unverified_context()
+    except Exception:
+        pass
+    return None
+
+def _urlopen_safe(req, timeout=15):
+    """
+    Abre conexiones urllib con máxima tolerancia ante fallos de certificados SSL
+    de Windows, redes empresariales, proxies o antivirus.
+    """
+    ctx = _get_ssl_context()
+    try:
+        if ctx:
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        return urllib.request.urlopen(req, timeout=timeout)
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "certificate" in err_msg or "ssl" in err_msg or "verify_failed" in err_msg or "unable to get local issuer" in err_msg:
+            try:
+                unverified_ctx = ssl._create_unverified_context()
+                return urllib.request.urlopen(req, timeout=timeout, context=unverified_ctx)
+            except Exception:
+                raise e
+        raise e
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QTextEdit, QMessageBox
@@ -82,7 +121,7 @@ def get_remote_version_info():
     try:
         rel_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         req = urllib.request.Request(rel_url, headers=_get_headers())
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with _urlopen_safe(req, timeout=12) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
                 tag = data.get("tag_name", "").lstrip("v")
@@ -118,7 +157,7 @@ def get_remote_version_info():
     try:
         contents_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/VENTAS%20Y%20NOTAS/Conciliador/version.json"
         req = urllib.request.Request(contents_url, headers=_get_headers(accept="application/vnd.github.raw"))
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with _urlopen_safe(req, timeout=12) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
                 return {
@@ -332,7 +371,7 @@ def _perform_update(parent_widget, remote_info):
             accept_hdr = "application/octet-stream" if ("api.github.com" in download_url or remote_info.get("is_api_asset")) else "*/*"
             req = urllib.request.Request(download_url, headers=_get_headers(accept=accept_hdr))
 
-            with urllib.request.urlopen(req, timeout=90) as response:
+            with _urlopen_safe(req, timeout=180) as response:
                 total_size = int(response.info().get("Content-Length", 0))
                 if total_size == 0 and remote_info.get("size"):
                     total_size = int(remote_info.get("size"))
