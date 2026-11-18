@@ -4980,3 +4980,527 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
         "liq_taller_total": tb_data["liq_taller_total"] if tb_data else 0.0,
         "dev_4175": tb_data["dev_4175"] if tb_data else 0.0
     }
+
+
+# ==============================================================================
+# MOTOR COMPARATIVO MULTI-MES (ESTADO DE RESULTADOS Y SEDES CONTINUO)
+# ==============================================================================
+
+def auto_detectar_meses_en_carpeta(ruta_carpeta):
+    """
+    Escanea inteligentemente una carpeta principal y sus subcarpetas para detectar
+    períodos mensuales y asociar automáticamente los archivos de Ventas, Balance Odoo
+    y Gastos por Centro de Costo de cada período.
+    """
+    import os, re
+
+    if not ruta_carpeta or not os.path.exists(ruta_carpeta):
+        return []
+
+    meses_keys = [
+        'ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO',
+        'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'SETIEMBRE', 'OCTUBRE',
+        'NOVIEMBRE', 'DICIEMBRE'
+    ]
+    meses_abbr = {
+        'ENE': 'ENERO', 'FEB': 'FEBRERO', 'MAR': 'MARZO', 'ABR': 'ABRIL',
+        'MAY': 'MAYO', 'JUN': 'JUNIO', 'JUL': 'JULIO', 'AGO': 'AGOSTO',
+        'SEP': 'SEPTIEMBRE', 'OCT': 'OCTUBRE', 'NOV': 'NOVIEMBRE', 'DIC': 'DICIEMBRE'
+    }
+
+    def _detectar_mes_nom(texto):
+        t_up = texto.upper()
+        m_yr = re.search(r'\b(202\d)\b', t_up)
+        yr = m_yr.group(1) if m_yr else '2026'
+        for m in meses_keys:
+            if m in t_up:
+                norm_m = 'SEPTIEMBRE' if m == 'SETIEMBRE' else m
+                return f'{norm_m} {yr}'
+        for a, m in meses_abbr.items():
+            if re.search(rf'\b{a}\b', t_up):
+                return f'{m} {yr}'
+        return None
+
+    subdirs = [os.path.join(ruta_carpeta, d) for d in os.listdir(ruta_carpeta) if os.path.isdir(os.path.join(ruta_carpeta, d))]
+    periodos_dict = {}
+
+    ignored = ['informe_', 'informe ', 'dashboard', 'test_', '~$']
+
+    if subdirs:
+        for sdir in subdirs:
+            p_name = _detectar_mes_nom(os.path.basename(sdir))
+            files = [os.path.join(sdir, f) for f in os.listdir(sdir) if f.endswith(('.xlsx', '.xls')) and not f.startswith('~$')]
+            files_src = [f for f in files if not any(x in os.path.basename(f).lower() for x in ignored)]
+            if not files_src:
+                continue
+
+            v_file, tb_file, g_file = None, None, None
+            for f in files_src:
+                fn = os.path.basename(f).lower()
+                if 'gasto' in fn: g_file = f
+                elif 'trial_balance' in fn or 'balance' in fn: tb_file = f
+                elif 'asiento' in fn or 'account.move' in fn or 'venta' in fn: v_file = f
+
+            if not p_name:
+                p_name = _detectar_mes_nom(' '.join(os.path.basename(f) for f in files_src)) or os.path.basename(sdir)
+
+            if p_name not in periodos_dict:
+                periodos_dict[p_name] = {'periodo': p_name, 'ventas': v_file, 'balance': tb_file, 'gastos': g_file, 'carpeta': sdir}
+            else:
+                if v_file: periodos_dict[p_name]['ventas'] = v_file
+                if tb_file: periodos_dict[p_name]['balance'] = tb_file
+                if g_file: periodos_dict[p_name]['gastos'] = g_file
+
+    files_root = [os.path.join(ruta_carpeta, f) for f in os.listdir(ruta_carpeta) if f.endswith(('.xlsx', '.xls')) and not f.startswith('~$')]
+    files_root_src = [f for f in files_root if not any(x in os.path.basename(f).lower() for x in ignored)]
+    for f in files_root_src:
+        fn = os.path.basename(f).lower()
+        m_name = _detectar_mes_nom(fn)
+        if not m_name:
+            continue
+        if m_name not in periodos_dict:
+            periodos_dict[m_name] = {'periodo': m_name, 'ventas': None, 'balance': None, 'gastos': None, 'carpeta': ruta_carpeta}
+
+        if 'gasto' in fn: periodos_dict[m_name]['gastos'] = f
+        elif 'trial_balance' in fn or 'balance' in fn: periodos_dict[m_name]['balance'] = f
+        elif 'asiento' in fn or 'account.move' in fn or 'venta' in fn: periodos_dict[m_name]['ventas'] = f
+
+    mes_order = {m: idx for idx, m in enumerate(meses_keys)}
+    def _sort_key(p_item):
+        p_str = p_item['periodo'].upper()
+        for m, idx in mes_order.items():
+            if m in p_str:
+                return idx
+        return 99
+
+    resultado = list(periodos_dict.values())
+    resultado.sort(key=_sort_key)
+    return resultado
+
+
+def extraer_metricas_periodo(ruta_ventas=None, ruta_tb=None, ruta_gastos=None, periodo_nombre=None):
+    """
+    Extrae de forma analítica y forense las métricas financieras de un período contable.
+    """
+    import os, openpyxl
+
+    periodo = periodo_nombre or _detectar_periodo(ruta_ventas, ruta_gastos, ruta_tb)
+    ingresos_brutos = 0.0
+    devoluciones = 0.0
+    ventas_por_sede = {}
+
+    if ruta_ventas and os.path.exists(ruta_ventas):
+        try:
+            wb_v = openpyxl.load_workbook(ruta_ventas, data_only=True)
+            ws_v = None
+            for name in ['Detalle Ventas', 'Detalle', 'Ventas', 'Libro', 'Sheet1', 'Hoja1']:
+                if name in wb_v.sheetnames:
+                    ws_v = wb_v[name]; break
+            if not ws_v: ws_v = wb_v.active
+
+            h_row = 1
+            num_col, tot_col, cc_col = 1, 7, 3
+            for r in range(1, min(15, ws_v.max_row + 1)):
+                row_vals = [str(ws_v.cell(r, c).value or '').lower() for c in range(1, min(20, ws_v.max_column + 1))]
+                if any('número' in v or 'numero' in v for v in row_vals):
+                    h_row = r
+                    for idx, v in enumerate(row_vals, 1):
+                        if 'número' in v or 'numero' in v: num_col = idx
+                        elif 'total con signo' in v or 'total' in v: tot_col = idx
+                        elif 'centro de costo' in v or 'centro' in v: cc_col = idx
+                    break
+
+            for r in range(h_row + 1, ws_v.max_row + 1):
+                num = str(ws_v.cell(r, num_col).value or '').strip()
+                if not num: continue
+                raw_val = ws_v.cell(r, tot_col).value
+                try: val = float(raw_val or 0.0)
+                except: val = 0.0
+                cc = str(ws_v.cell(r, cc_col).value or 'SIN ASIGNAR').strip()
+
+                is_nc = num.upper().startswith(('NC', 'NCC')) or val < 0
+                if is_nc:
+                    devoluciones += abs(val)
+                else:
+                    ingresos_brutos += val
+                    ventas_por_sede[cc] = ventas_por_sede.get(cc, 0.0) + val
+            wb_v.close()
+        except Exception as e_v:
+            print(f"Advertencia al leer ventas de {periodo}: {e_v}")
+
+    costo_ventas = 0.0
+    otros_ingresos = 0.0
+    int_tb = 0.0
+    gastos_tb_sin_int = 0.0
+
+    if ruta_tb and os.path.exists(ruta_tb):
+        try:
+            tb_data = leer_trial_balance_odoo(ruta_tb)
+            costo_ventas = tb_data.get('costo_total_61', 0.0)
+            otros_ingresos = tb_data.get('total_otros_ingresos', 0.0)
+            if not ingresos_brutos:
+                devoluciones = tb_data.get('dev_4175', 0.0)
+                ingresos_brutos = tb_data.get('total_ventas_brutas', 0.0)
+
+            cuentas = tb_data.get('cuentas', {})
+            g_51 = sum(c.get('debit', 0.0) - c.get('credit', 0.0) for code, c in cuentas.items() if code.startswith('51'))
+            g_52 = sum(c.get('debit', 0.0) - c.get('credit', 0.0) for code, c in cuentas.items() if code.startswith('52'))
+            g_53 = sum(c.get('debit', 0.0) - c.get('credit', 0.0) for code, c in cuentas.items() if code.startswith('53'))
+            c_int = cuentas.get('53052001', {})
+            int_tb = c_int.get('debit', 0.0) - c_int.get('credit', 0.0)
+            gastos_tb_sin_int = (g_51 + g_52 + g_53) - int_tb
+        except Exception as e_tb:
+            print(f"Advertencia al leer TB de {periodo}: {e_tb}")
+
+    gastos_sin_int = gastos_tb_sin_int
+    intereses_deuda = int_tb
+    gastos_por_sede = {}
+
+    if ruta_gastos and os.path.exists(ruta_gastos):
+        try:
+            sedes_keys = [
+                ('San jose', 'San José'),
+                ('GRANADA MOBILITY', 'Granada Mobility'),
+                ('SAN MARTIN', 'San Martín'),
+                ('VILLAVICENCIO', 'Villavicencio'),
+                ('PUERTO INIRIDA', 'Puerto Inírida'),
+                ('GRANADA TVS', 'Granada TVS'),
+                ('CARREÑO', 'Carreño')
+            ]
+            wb_g = openpyxl.load_workbook(ruta_gastos, data_only=True)
+            if 'Consolidado' in wb_g.sheetnames:
+                ws_c = wb_g['Consolidado']
+                tot_5 = 0.0
+                int_g = 0.0
+                for row in ws_c.iter_rows(min_row=4, values_only=True):
+                    code = str(row[0] or '').strip()
+                    deb = float(row[4] or 0.0)
+                    cred = float(row[5] or 0.0)
+                    net = deb - cred
+                    if code.startswith('5'):
+                        tot_5 += net
+                        if code == '53052001':
+                            int_g += net
+                gastos_sin_int = tot_5 - int_g
+                intereses_deuda = int_g
+
+            for s_sh, s_nom in sedes_keys:
+                if s_sh in wb_g.sheetnames:
+                    ws_s = wb_g[s_sh]
+                    s_tot = 0.0
+                    s_int = 0.0
+                    for row in ws_s.iter_rows(min_row=4, values_only=True):
+                        code = str(row[0] or '').strip()
+                        deb = float(row[4] or 0.0)
+                        cred = float(row[5] or 0.0)
+                        net = deb - cred
+                        if code.startswith('5'):
+                            s_tot += net
+                            if code == '53052001':
+                                s_int += net
+                    gastos_por_sede[s_nom] = s_tot - s_int
+            wb_g.close()
+        except Exception as e_g:
+            print(f"Advertencia al leer Gastos CC de {periodo}: {e_g}")
+
+    ingresos_netos = ingresos_brutos - devoluciones
+    utilidad_bruta = ingresos_netos - costo_ventas
+    utilidad_operacional = utilidad_bruta - gastos_sin_int
+    utilidad_neta = utilidad_operacional - intereses_deuda
+
+    return {
+        'periodo': periodo,
+        'ingresos_brutos': ingresos_brutos,
+        'devoluciones': -devoluciones,
+        'ingresos_netos': ingresos_netos,
+        'costo_ventas': costo_ventas,
+        'utilidad_bruta': utilidad_bruta,
+        'gastos_sin_int': gastos_sin_int,
+        'utilidad_operacional': utilidad_operacional,
+        'intereses_deuda': intereses_deuda,
+        'utilidad_neta': utilidad_neta,
+        'otros_ingresos': otros_ingresos,
+        'gastos_por_sede': gastos_por_sede,
+        'ventas_por_sede': ventas_por_sede
+    }
+
+
+def procesar_comparativo_multi_mes(lista_periodos, ruta_salida=None):
+    """
+    Genera un informe gerencial consolidado y comparativo multi-mes en Excel,
+    presentando cada período en columnas continuas con fórmulas vivas, márgenes
+    y desglose de gastos y ventas por sede.
+    """
+    import os, openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    if not lista_periodos:
+        raise ValueError("No se suministraron períodos para generar el comparativo.")
+
+    if len(lista_periodos) == 1:
+        p0 = lista_periodos[0]
+        return procesar_informe_ventas_asiento(
+            ruta_entrada=p0.get('ventas'),
+            ruta_salida=ruta_salida,
+            ruta_tb=p0.get('balance'),
+            ruta_gastos=p0.get('gastos')
+        )
+
+    if not ruta_salida:
+        dir_base = os.path.dirname(lista_periodos[0].get('ventas') or lista_periodos[0].get('balance') or '.')
+        ruta_salida = os.path.join(dir_base, 'Informe_Comparativo_MultiMes.xlsx')
+
+    ruta_salida = _asegurar_ruta_disponible(ruta_salida)
+
+    periodos_data = []
+    for item in lista_periodos:
+        m = extraer_metricas_periodo(
+            ruta_ventas=item.get('ventas'),
+            ruta_tb=item.get('balance'),
+            ruta_gastos=item.get('gastos'),
+            periodo_nombre=item.get('periodo')
+        )
+        periodos_data.append(m)
+
+    wb = openpyxl.Workbook()
+
+    # ── HOJA 1: ESTADO RESULTADOS COMPARATIVO (Longitud <= 31 caracteres) ──
+    ws = wb.active
+    ws.title = 'Estado Resultados Comparativo'
+    ws.sheet_view.showGridLines = True
+
+    FONT_NAME = 'Arial'
+    f_title = Font(name=FONT_NAME, size=13, bold=True, color='1B365D')
+    f_sub = Font(name=FONT_NAME, size=9, italic=True, color='5D6D7E')
+    f_hdr = Font(name=FONT_NAME, size=10, bold=True, color='FFFFFF')
+    f_dat = Font(name=FONT_NAME, size=10, color='202020')
+    f_dat_bold = Font(name=FONT_NAME, size=10, bold=True, color='1B365D')
+    f_op_bold = Font(name=FONT_NAME, size=11, bold=True, color='145A32')
+    f_net_bold = Font(name=FONT_NAME, size=11, bold=True, color='0E6251')
+    f_int_bold = Font(name=FONT_NAME, size=10, bold=True, color='78281F')
+
+    fill_hdr = PatternFill(start_color='1B365D', end_color='1B365D', fill_type='solid')
+    fill_sub_hdr = PatternFill(start_color='2C3E50', end_color='2C3E50', fill_type='solid')
+    fill_zebra = PatternFill(start_color='F8FAFC', end_color='F8FAFC', fill_type='solid')
+    fill_mint = PatternFill(start_color='D4EFDF', end_color='D4EFDF', fill_type='solid')
+    fill_blush = PatternFill(start_color='FADBD8', end_color='FADBD8', fill_type='solid')
+    fill_net = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid')
+    fill_total = PatternFill(start_color='EAEDED', end_color='EAEDED', fill_type='solid')
+
+    b_thin = Border(left=Side(style='thin', color='D1D5DB'), right=Side(style='thin', color='D1D5DB'), top=Side(style='thin', color='D1D5DB'), bottom=Side(style='thin', color='D1D5DB'))
+    b_double = Border(left=Side(style='thin', color='D1D5DB'), right=Side(style='thin', color='D1D5DB'), top=Side(style='thin', color='D1D5DB'), bottom=Side(style='double', color='1B365D'))
+
+    NF_CURR = '$#,##0.00'
+    NF_PCT = '0.0%'
+
+    ws.cell(2, 2, 'CH INVERSIONES COLOMBIA S.A.S ZOMAC | NIT 901.368.587-8').font = f_title
+    ws.cell(3, 2, 'ESTADO DE RESULTADOS INTEGRAL COMPARATIVO MULTI-MES').font = f_sub
+    ws.row_dimensions[2].height = 22
+    ws.row_dimensions[3].height = 18
+
+    r_hdr = 5
+    ws.row_dimensions[r_hdr].height = 26
+    c_th = ws.cell(r_hdr, 2, 'CONCEPTO FINANCIERO')
+    c_th.font = f_hdr; c_th.fill = fill_hdr; c_th.border = b_thin; c_th.alignment = Alignment(horizontal='left', vertical='center')
+
+    n_per = len(periodos_data)
+    for idx, p in enumerate(periodos_data):
+        c_i = 3 + idx
+        c = ws.cell(r_hdr, c_i, p['periodo'])
+        c.font = f_hdr; c.fill = fill_hdr; c.border = b_thin; c.alignment = Alignment(horizontal='right', vertical='center')
+
+    c_tot_idx = 3 + n_per
+    c_tot = ws.cell(r_hdr, c_tot_idx, 'TOTAL ACUMULADO')
+    c_tot.font = f_hdr; c_tot.fill = fill_sub_hdr; c_tot.border = b_thin; c_tot.alignment = Alignment(horizontal='right', vertical='center')
+
+    conceptos = [
+        ('Ingresos Operacionales Brutos', 'ingresos_brutos', f_dat_bold, None, b_thin, NF_CURR),
+        ('(-) Devoluciones en Ventas y Notas Crédito (4175)', 'devoluciones', f_dat, fill_blush, b_thin, NF_CURR),
+        ('(=) INGRESOS OPERACIONALES NETOS', 'ingresos_netos', f_dat_bold, fill_zebra, b_thin, NF_CURR),
+        ('(-) Costo de Ventas (Grupo 61 Odoo)', 'costo_ventas', f_dat, None, b_thin, NF_CURR),
+        ('(=) UTILIDAD BRUTA OPERACIONAL', 'utilidad_bruta', f_dat_bold, fill_zebra, b_thin, NF_CURR),
+        ('(-) Gastos Operacionales (sin intereses)', 'gastos_sin_int', f_dat, fill_blush, b_thin, NF_CURR),
+        ('(=) UTILIDAD OPERACIONAL', 'utilidad_operacional', f_op_bold, fill_mint, b_thin, NF_CURR),
+        ('(-) Intereses Financieros (Cuenta 53052001)', 'intereses_deuda', f_int_bold, fill_blush, b_thin, NF_CURR),
+        ('(=) UTILIDAD / RESULTADO NETO', 'utilidad_neta', f_net_bold, fill_net, b_double, NF_CURR),
+    ]
+
+    curr_r = 6
+    row_refs = {}
+    for label, key, font, fill, border, num_fmt in conceptos:
+        ws.row_dimensions[curr_r].height = 22
+        c_lbl = ws.cell(curr_r, 2, label)
+        c_lbl.font = font; c_lbl.border = border; c_lbl.alignment = Alignment(horizontal='left', vertical='center')
+        if fill: c_lbl.fill = fill
+        row_refs[key] = curr_r
+
+        for idx, p in enumerate(periodos_data):
+            c_i = 3 + idx
+            col_l = get_column_letter(c_i)
+            if key == 'ingresos_netos':
+                c_v = ws.cell(curr_r, c_i, f'={col_l}{row_refs["ingresos_brutos"]}+{col_l}{row_refs["devoluciones"]}')
+            elif key == 'utilidad_bruta':
+                c_v = ws.cell(curr_r, c_i, f'={col_l}{row_refs["ingresos_netos"]}-{col_l}{row_refs["costo_ventas"]}')
+            elif key == 'utilidad_operacional':
+                c_v = ws.cell(curr_r, c_i, f'={col_l}{row_refs["utilidad_bruta"]}-{col_l}{row_refs["gastos_sin_int"]}')
+            elif key == 'utilidad_neta':
+                c_v = ws.cell(curr_r, c_i, f'={col_l}{row_refs["utilidad_operacional"]}-{col_l}{row_refs["intereses_deuda"]}')
+            else:
+                c_v = ws.cell(curr_r, c_i, p.get(key, 0.0))
+
+            c_v.font = font; c_v.border = border; c_v.number_format = num_fmt; c_v.alignment = Alignment(horizontal='right', vertical='center')
+            if fill: c_v.fill = fill
+
+        first_c = get_column_letter(3)
+        last_c = get_column_letter(3 + n_per - 1)
+        c_tot_r = ws.cell(curr_r, c_tot_idx, f'=SUM({first_c}{curr_r}:{last_c}{curr_r})')
+        c_tot_r.font = font; c_tot_r.fill = fill_total; c_tot_r.border = border; c_tot_r.number_format = num_fmt; c_tot_r.alignment = Alignment(horizontal='right', vertical='center')
+        curr_r += 1
+
+    # Margenes porcentuales
+    curr_r += 1
+    ws.cell(curr_r, 2, 'INDICADORES DE RENTABILIDAD Y MÁRGENES').font = Font(name=FONT_NAME, size=10, bold=True, color='1B365D')
+    curr_r += 1
+
+    margenes = [
+        ('Margen Bruto (%)', 'utilidad_bruta'),
+        ('Margen Operacional (%)', 'utilidad_operacional'),
+        ('Margen Neto (%)', 'utilidad_neta')
+    ]
+    r_net_in = row_refs['ingresos_netos']
+    for m_lbl, m_key in margenes:
+        ws.row_dimensions[curr_r].height = 20
+        c_l = ws.cell(curr_r, 2, m_lbl)
+        c_l.font = f_dat_bold; c_l.border = b_thin; c_l.alignment = Alignment(horizontal='left', vertical='center')
+        m_r = row_refs[m_key]
+        for idx in range(n_per + 1):
+            c_i = 3 + idx
+            col_l = get_column_letter(c_i)
+            c_m = ws.cell(curr_r, c_i, f'={col_l}{m_r}/{col_l}{r_net_in}')
+            c_m.font = f_dat_bold; c_m.border = b_thin; c_m.number_format = NF_PCT; c_m.alignment = Alignment(horizontal='right', vertical='center')
+            if idx == n_per: c_m.fill = fill_total
+        curr_r += 1
+
+    ws.column_dimensions['A'].width = 3
+    ws.column_dimensions['B'].width = 46
+    for idx in range(n_per + 2):
+        ws.column_dimensions[get_column_letter(3 + idx)].width = 24
+
+    # ── HOJA 2: COMPARATIVO GASTOS POR SEDE ──
+    ws_g = wb.create_sheet('Comparativo Gastos por Sede')
+    ws_g.sheet_view.showGridLines = True
+    ws_g.cell(2, 2, 'DISTRIBUCIÓN Y COMPARATIVO DE GASTOS OPERACIONALES POR SEDE').font = f_title
+    ws_g.cell(3, 2, 'Gastos Operacionales (Clase 5 sin intereses financieros) discriminados por Centro de Costo').font = f_sub
+    ws_g.row_dimensions[2].height = 22
+    ws_g.row_dimensions[3].height = 18
+
+    ws_g.row_dimensions[5].height = 26
+    ws_g.cell(5, 2, 'CENTRO DE COSTO / SEDE').font = f_hdr
+    ws_g.cell(5, 2).fill = fill_hdr; ws_g.cell(5, 2).border = b_thin; ws_g.cell(5, 2).alignment = Alignment(horizontal='left', vertical='center')
+
+    for idx, p in enumerate(periodos_data):
+        c_i = 3 + idx
+        c = ws_g.cell(5, c_i, p['periodo'])
+        c.font = f_hdr; c.fill = fill_hdr; c.border = b_thin; c.alignment = Alignment(horizontal='right', vertical='center')
+
+    c_g_tot = ws_g.cell(5, c_tot_idx, 'TOTAL ACUMULADO')
+    c_g_tot.font = f_hdr; c_g_tot.fill = fill_sub_hdr; c_g_tot.border = b_thin; c_g_tot.alignment = Alignment(horizontal='right', vertical='center')
+
+    sedes_nombres = [
+        'San José', 'Granada Mobility', 'San Martín', 'Villavicencio', 'Puerto Inírida', 'Granada TVS', 'Carreño'
+    ]
+    r_g = 6
+    for s_nom in sedes_nombres:
+        ws_g.row_dimensions[r_g].height = 22
+        c_s = ws_g.cell(r_g, 2, s_nom)
+        c_s.font = f_dat_bold; c_s.border = b_thin; c_s.alignment = Alignment(horizontal='left', vertical='center')
+
+        for idx, p in enumerate(periodos_data):
+            c_i = 3 + idx
+            val = p.get('gastos_por_sede', {}).get(s_nom, 0.0)
+            c = ws_g.cell(r_g, c_i, val)
+            c.font = f_dat; c.border = b_thin; c.number_format = NF_CURR; c.alignment = Alignment(horizontal='right', vertical='center')
+
+        first_c = get_column_letter(3)
+        last_c = get_column_letter(3 + n_per - 1)
+        c_t = ws_g.cell(r_g, c_tot_idx, f'=SUM({first_c}{r_g}:{last_c}{r_g})')
+        c_t.font = f_dat_bold; c_t.fill = fill_total; c_t.border = b_thin; c_t.number_format = NF_CURR; c_t.alignment = Alignment(horizontal='right', vertical='center')
+        r_g += 1
+
+    ws_g.row_dimensions[r_g].height = 24
+    c_tot_lbl = ws_g.cell(r_g, 2, 'TOTAL GASTOS OPERACIONALES')
+    c_tot_lbl.font = f_dat_bold; c_tot_lbl.fill = fill_mint; c_tot_lbl.border = b_double; c_tot_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    for idx in range(n_per + 1):
+        c_i = 3 + idx
+        col_l = get_column_letter(c_i)
+        c_t_col = ws_g.cell(r_g, c_i, f'=SUM({col_l}6:{col_l}{r_g-1})')
+        c_t_col.font = f_dat_bold; c_t_col.fill = fill_mint; c_t_col.border = b_double; c_t_col.number_format = NF_CURR; c_t_col.alignment = Alignment(horizontal='right', vertical='center')
+
+    ws_g.column_dimensions['A'].width = 3
+    ws_g.column_dimensions['B'].width = 34
+    for idx in range(n_per + 2):
+        ws_g.column_dimensions[get_column_letter(3 + idx)].width = 24
+
+    # ── HOJA 3: COMPARATIVO VENTAS POR SEDE ──
+    ws_v = wb.create_sheet('Comparativo Ventas por Sede')
+    ws_v.sheet_view.showGridLines = True
+    ws_v.cell(2, 2, 'DISTRIBUCIÓN Y COMPARATIVO DE VENTAS BRUTAS POR SEDE').font = f_title
+    ws_v.cell(3, 2, 'Facturación comercial bruta por Centro de Costo a través de los períodos analizados').font = f_sub
+    ws_v.row_dimensions[2].height = 22
+    ws_v.row_dimensions[3].height = 18
+
+    ws_v.row_dimensions[5].height = 26
+    ws_v.cell(5, 2, 'CENTRO DE COSTO / SEDE').font = f_hdr
+    ws_v.cell(5, 2).fill = fill_hdr; ws_v.cell(5, 2).border = b_thin; ws_v.cell(5, 2).alignment = Alignment(horizontal='left', vertical='center')
+
+    for idx, p in enumerate(periodos_data):
+        c_i = 3 + idx
+        c = ws_v.cell(5, c_i, p['periodo'])
+        c.font = f_hdr; c.fill = fill_hdr; c.border = b_thin; c.alignment = Alignment(horizontal='right', vertical='center')
+
+    c_v_tot = ws_v.cell(5, c_tot_idx, 'TOTAL ACUMULADO')
+    c_v_tot.font = f_hdr; c_v_tot.fill = fill_sub_hdr; c_v_tot.border = b_thin; c_v_tot.alignment = Alignment(horizontal='right', vertical='center')
+
+    r_v = 6
+    for s_nom in sedes_nombres:
+        ws_v.row_dimensions[r_v].height = 22
+        c_s = ws_v.cell(r_v, 2, s_nom)
+        c_s.font = f_dat_bold; c_s.border = b_thin; c_s.alignment = Alignment(horizontal='left', vertical='center')
+
+        for idx, p in enumerate(periodos_data):
+            c_i = 3 + idx
+            val = 0.0
+            for k_s, v_s in p.get('ventas_por_sede', {}).items():
+                if s_nom.upper() in k_s.upper() or k_s.upper() in s_nom.upper():
+                    val += v_s
+            c = ws_v.cell(r_v, c_i, val)
+            c.font = f_dat; c.border = b_thin; c.number_format = NF_CURR; c.alignment = Alignment(horizontal='right', vertical='center')
+
+        first_c = get_column_letter(3)
+        last_c = get_column_letter(3 + n_per - 1)
+        c_t = ws_v.cell(r_v, c_tot_idx, f'=SUM({first_c}{r_v}:{last_c}{r_v})')
+        c_t.font = f_dat_bold; c_t.fill = fill_total; c_t.border = b_thin; c_t.number_format = NF_CURR; c_t.alignment = Alignment(horizontal='right', vertical='center')
+        r_v += 1
+
+    ws_v.row_dimensions[r_v].height = 24
+    c_tot_v_lbl = ws_v.cell(r_v, 2, 'TOTAL FACTURACIÓN BRUTA')
+    c_tot_v_lbl.font = f_dat_bold; c_tot_v_lbl.fill = fill_mint; c_tot_v_lbl.border = b_double; c_tot_v_lbl.alignment = Alignment(horizontal='left', vertical='center')
+    for idx in range(n_per + 1):
+        c_i = 3 + idx
+        col_l = get_column_letter(c_i)
+        c_t_col = ws_v.cell(r_v, c_i, f'=SUM({col_l}6:{col_l}{r_v-1})')
+        c_t_col.font = f_dat_bold; c_t_col.fill = fill_mint; c_t_col.border = b_double; c_t_col.number_format = NF_CURR; c_t_col.alignment = Alignment(horizontal='right', vertical='center')
+
+    ws_v.column_dimensions['A'].width = 3
+    ws_v.column_dimensions['B'].width = 34
+    for idx in range(n_per + 2):
+        ws_v.column_dimensions[get_column_letter(3 + idx)].width = 24
+
+    wb.save(ruta_salida)
+
+    return {
+        'ruta_guardada': ruta_salida,
+        'total_periodos': n_per,
+        'periodos': [p['periodo'] for p in periodos_data]
+    }

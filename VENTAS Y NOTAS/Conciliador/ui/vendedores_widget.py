@@ -2,7 +2,8 @@ import os
 from PyQt6.QtWidgets import (  # type: ignore
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QTextEdit, QFileDialog, QMessageBox, QFrame,
-    QGraphicsDropShadowEffect, QDialog, QListWidget, QGroupBox
+    QGraphicsDropShadowEffect, QDialog, QListWidget, QGroupBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize  # type: ignore
 from PyQt6.QtGui import QFont, QColor  # type: ignore
@@ -12,6 +13,9 @@ try:
         procesar_dashboard_vendedores,
         procesar_dashboard_nc_asiento,
         procesar_informe_ventas_asiento,
+        procesar_comparativo_multi_mes,
+        auto_detectar_meses_en_carpeta,
+        extraer_metricas_periodo,
         _leer_excel_inteligente,
         cargar_config_vendedores,
         guardar_config_vendedores
@@ -23,6 +27,9 @@ except ImportError:
         procesar_dashboard_vendedores,
         procesar_dashboard_nc_asiento,
         procesar_informe_ventas_asiento,
+        procesar_comparativo_multi_mes,
+        auto_detectar_meses_en_carpeta,
+        extraer_metricas_periodo,
         _leer_excel_inteligente,
         cargar_config_vendedores,
         guardar_config_vendedores
@@ -372,6 +379,321 @@ class InformeVentasWorker(QThread):
             self.error.emit(str(e))
 
 
+class MultiMesWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, lista_periodos, ruta_salida):
+        super().__init__()
+        self.lista_periodos = lista_periodos
+        self.ruta_salida = ruta_salida
+
+    def run(self):
+        try:
+            stats = procesar_comparativo_multi_mes(self.lista_periodos, self.ruta_salida)
+            self.finished.emit(stats)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class DialogoComparativoMultiMes(QDialog):
+    """
+    Diálogo para consolidar y comparar múltiples períodos contables (Estado de Resultados
+    y análisis por sede continuo), permitiendo carga automática por carpetas o manual.
+    """
+    def __init__(self, parent=None, periodo_inicial=None):
+        super().__init__(parent)
+        self.setWindowTitle("Consolidador y Comparativo Multi-Mes — Camila Conciliador")
+        self.setMinimumSize(920, 580)
+        self.worker = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        # Encabezado
+        lbl_title = QLabel("📊 Comparativo Multi-Mes Gerencial (Estado de Resultados y Sedes)")
+        lbl_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        lbl_title.setStyleSheet("color: #38bdf8;")
+        layout.addWidget(lbl_title)
+
+        lbl_desc = QLabel(
+            "Carga una carpeta principal con subcarpetas mensuales (ej: 08_AGOSTO, 10_OCTUBRE) "
+            "o agrega períodos manualmente para generar un comparativo continuo sin alterar ningún dato original."
+        )
+        lbl_desc.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        lbl_desc.setWordWrap(True)
+        layout.addWidget(lbl_desc)
+
+        # Botonera de carga
+        btn_bar = QHBoxLayout()
+        btn_bar.setSpacing(10)
+
+        self.btn_carpeta = QPushButton("📁 Cargar Carpeta Principal con Meses")
+        self.btn_carpeta.setProperty("class", "SecondaryButton")
+        self.btn_carpeta.setMinimumHeight(36)
+        self.btn_carpeta.setStyleSheet("background-color: #4f46e5; color: #ffffff; font-weight: bold; border-radius: 6px; padding: 6px 14px;")
+        self.btn_carpeta.clicked.connect(self.cargar_carpeta)
+        btn_bar.addWidget(self.btn_carpeta)
+
+        self.btn_agregar = QPushButton("➕ Agregar Período Manual")
+        self.btn_agregar.setProperty("class", "SecondaryButton")
+        self.btn_agregar.setMinimumHeight(36)
+        self.btn_agregar.clicked.connect(self.agregar_fila_vacia)
+        btn_bar.addWidget(self.btn_agregar)
+
+        self.btn_limpiar = QPushButton("🧹 Limpiar Todo")
+        self.btn_limpiar.setProperty("class", "DangerButton")
+        self.btn_limpiar.setMinimumHeight(36)
+        self.btn_limpiar.clicked.connect(self.limpiar_tabla)
+        btn_bar.addWidget(self.btn_limpiar)
+
+        btn_bar.addStretch()
+        layout.addLayout(btn_bar)
+
+        # Tabla de Períodos
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels([
+            "Período / Mes", "Archivo Ventas", "Balance Odoo", "Gastos CC", "Acción"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 140)
+        self.table.setColumnWidth(4, 90)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #0f172a;
+                border: 1px solid #1e293b;
+                border-radius: 6px;
+                color: #f8fafc;
+                gridline-color: #1e293b;
+            }
+            QHeaderView::section {
+                background-color: #1e293b;
+                color: #94a3b8;
+                font-weight: bold;
+                padding: 6px;
+                border: 1px solid #0f172a;
+            }
+        """)
+        layout.addWidget(self.table)
+
+        # Destino de salida
+        out_box = QHBoxLayout()
+        out_lbl = QLabel("Guardar En:")
+        out_lbl.setStyleSheet("color: #94a3b8; font-weight: bold; font-size: 11px;")
+        self.out_path = QLineEdit()
+        self.out_path.setPlaceholderText("Ruta del informe Excel comparativo resultante...")
+        self.out_btn = QPushButton("Examinar Destino...")
+        self.out_btn.setProperty("class", "SecondaryButton")
+        self.out_btn.setMinimumHeight(32)
+        self.out_btn.clicked.connect(self.examinar_destino)
+
+        out_box.addWidget(out_lbl)
+        out_box.addWidget(self.out_path)
+        out_box.addWidget(self.out_btn)
+        layout.addLayout(out_box)
+
+        # Estado y progreso
+        self.status_lbl = QLabel("Listo. Carga una carpeta o agrega períodos para comparar.")
+        self.status_lbl.setStyleSheet("color: #64748b; font-size: 11px; font-style: italic;")
+        layout.addWidget(self.status_lbl)
+
+        # Botón Ejecutar
+        bot_bar = QHBoxLayout()
+        self.btn_ejecutar = QPushButton("   🚀 Generar Informe Comparativo Multi-Mes   ")
+        self.btn_ejecutar.setMinimumHeight(44)
+        self.btn_ejecutar.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #059669; color: #ffffff; border-radius: 8px; font-weight: bold; font-size: 13px;"
+            "  padding: 10px 20px; border: 1px solid #10b981;"
+            "}"
+            "QPushButton:hover { background-color: #10b981; }"
+            "QPushButton:disabled { background-color: #1a2f2b; color: #3a5c53; border-color: #1a2f2b; }"
+        )
+        self.btn_ejecutar.clicked.connect(self.ejecutar)
+
+        btn_cerrar = QPushButton("Cerrar")
+        btn_cerrar.setProperty("class", "SecondaryButton")
+        btn_cerrar.setMinimumHeight(44)
+        btn_cerrar.clicked.connect(self.reject)
+
+        bot_bar.addWidget(btn_cerrar)
+        bot_bar.addStretch()
+        bot_bar.addWidget(self.btn_ejecutar)
+        layout.addLayout(bot_bar)
+
+        # Pre-cargar período inicial de la ventana principal si existe
+        if periodo_inicial and any(periodo_inicial.values()):
+            self.agregar_fila(
+                periodo_inicial.get('periodo', 'OCTUBRE 2026'),
+                periodo_inicial.get('ventas', ''),
+                periodo_inicial.get('balance', ''),
+                periodo_inicial.get('gastos', '')
+            )
+
+    def agregar_fila_vacia(self):
+        row_idx = self.table.rowCount() + 1
+        self.agregar_fila(f"PERÍODO {row_idx}", "", "", "")
+
+    def agregar_fila(self, periodo, ventas, balance, gastos):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        # Col 0: Periodo (editable)
+        p_edit = QLineEdit(str(periodo))
+        p_edit.setStyleSheet("background: #1e293b; border: none; padding: 4px; color: #38bdf8; font-weight: bold;")
+        self.table.setCellWidget(row, 0, p_edit)
+
+        # Helper para crear celda de archivo con botón examinar
+        def _crear_celda_archivo(ruta_ini, tipo):
+            w = QWidget()
+            l = QHBoxLayout(w)
+            l.setContentsMargins(4, 2, 4, 2); l.setSpacing(4)
+            lbl = QLabel(os.path.basename(ruta_ini) if ruta_ini else f"(Sin {tipo})")
+            lbl.setStyleSheet("color: #f1f5f9; font-size: 11px;")
+            lbl.setToolTip(ruta_ini or "")
+            b = QPushButton("...")
+            b.setFixedSize(24, 22)
+            b.setStyleSheet("background: #334155; color: white; border-radius: 3px;")
+            def _examinar():
+                f, _ = QFileDialog.getOpenFileName(self, f"Seleccionar {tipo}", "", "Excel (*.xlsx *.xls)")
+                if f:
+                    lbl.setText(os.path.basename(f))
+                    lbl.setToolTip(f)
+                    w.setProperty("ruta_archivo", f)
+            b.clicked.connect(_examinar)
+            w.setProperty("ruta_archivo", ruta_ini or "")
+            l.addWidget(lbl, 1)
+            l.addWidget(b, 0)
+            return w
+
+        self.table.setCellWidget(row, 1, _crear_celda_archivo(ventas, "Ventas"))
+        self.table.setCellWidget(row, 2, _crear_celda_archivo(balance, "Balance"))
+        self.table.setCellWidget(row, 3, _crear_celda_archivo(gastos, "Gastos CC"))
+
+        # Col 4: Boton Eliminar
+        del_btn = QPushButton("❌")
+        del_btn.setStyleSheet("background: #7f1d1d; color: white; border: none; border-radius: 4px; padding: 4px;")
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        def _eliminar():
+            for r in range(self.table.rowCount()):
+                if self.table.cellWidget(r, 4) == del_btn:
+                    self.table.removeRow(r)
+                    break
+        del_btn.clicked.connect(_eliminar)
+        self.table.setCellWidget(row, 4, del_btn)
+
+    def limpiar_tabla(self):
+        self.table.setRowCount(0)
+        self.status_lbl.setText("Lista limpiada.")
+
+    def cargar_carpeta(self):
+        folder = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta Principal con Meses")
+        if not folder:
+            return
+
+        meses = auto_detectar_meses_en_carpeta(folder)
+        if not meses:
+            QMessageBox.warning(
+                self, "Sin Períodos Detectados",
+                f"No se detectaron archivos de ventas, balance o gastos en la carpeta:\n{folder}\n\n"
+                "Asegúrate de que contenga subcarpetas por mes o archivos Excel con nombres que indiquen el mes."
+            )
+            return
+
+        for m in meses:
+            self.agregar_fila(m['periodo'], m['ventas'], m['balance'], m['gastos'])
+
+        default_out = os.path.join(folder, "Informe_Comparativo_MultiMes.xlsx")
+        self.out_path.setText(default_out)
+        self.status_lbl.setText(f"✅ Se cargaron automáticamente {len(meses)} períodos desde la carpeta.")
+
+    def examinar_destino(self):
+        f, _ = QFileDialog.getSaveFileName(self, "Guardar Informe Comparativo", "Informe_Comparativo_MultiMes.xlsx", "Excel (*.xlsx)")
+        if f:
+            self.out_path.setText(f)
+
+    def ejecutar(self):
+        rows = self.table.rowCount()
+        if rows == 0:
+            QMessageBox.warning(self, "Aviso", "Agrega al menos un período para procesar.")
+            return
+
+        lista_p = []
+        for r in range(rows):
+            p_widget = self.table.cellWidget(r, 0)
+            periodo = p_edit = p_widget.text().strip() if hasattr(p_widget, "text") else f"Mes {r+1}"
+            w_v = self.table.cellWidget(r, 1)
+            w_tb = self.table.cellWidget(r, 2)
+            w_g = self.table.cellWidget(r, 3)
+
+            v_path = w_v.property("ruta_archivo") if w_v else ""
+            tb_path = w_tb.property("ruta_archivo") if w_tb else ""
+            g_path = w_g.property("ruta_archivo") if w_g else ""
+
+            if not (v_path or tb_path or g_path):
+                continue
+
+            lista_p.append({
+                "periodo": periodo,
+                "ventas": v_path,
+                "balance": tb_path,
+                "gastos": g_path
+            })
+
+        if not lista_p:
+            QMessageBox.warning(self, "Aviso", "Ningún período tiene archivos asignados.")
+            return
+
+        out = self.out_path.text().strip()
+        if not out:
+            self.examinar_destino()
+            out = self.out_path.text().strip()
+            if not out:
+                return
+
+        self.btn_ejecutar.setEnabled(False)
+        self.btn_ejecutar.setText("⏳ Procesando Comparativo...")
+        self.status_lbl.setText("Procesando Estados de Resultados y consolidando períodos...")
+
+        self.worker = MultiMesWorker(lista_p, out)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.error.connect(self.on_error)
+        self.worker.start()
+
+    def on_finished(self, stats):
+        self.btn_ejecutar.setEnabled(True)
+        self.btn_ejecutar.setText("   🚀 Generar Informe Comparativo Multi-Mes   ")
+        ruta = stats.get("ruta_guardada", "")
+        n_p = stats.get("total_periodos", len(stats.get("periodos", [])))
+        self.status_lbl.setText(f"✅ Comparativo completado exitosamente: {n_p} períodos consolidados.")
+
+        QMessageBox.information(
+            self, "Comparativo Generado",
+            f"✅ El Informe Comparativo Multi-Mes se generó exitosamente.\n\n"
+            f"Períodos consolidados: {n_p}\n"
+            f"Archivo:\n{ruta}"
+        )
+        if ruta and os.path.exists(ruta):
+            try:
+                os.startfile(ruta)
+            except Exception:
+                pass
+        self.accept()
+
+    def on_error(self, err):
+        self.btn_ejecutar.setEnabled(True)
+        self.btn_ejecutar.setText("   🚀 Generar Informe Comparativo Multi-Mes   ")
+        self.status_lbl.setText("❌ Error al procesar el comparativo.")
+        QMessageBox.critical(self, "Error en Comparativo", f"Ocurrió un error al procesar:\n{err}")
+
+
 class VendedoresWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -539,6 +861,19 @@ class VendedoresWidget(QWidget):
         btn_layout.setSpacing(12)
         btn_layout.addStretch()
 
+        self.comparativo_btn = QPushButton("   📅 Comparativo Multi-Mes (Varios Periodos)   ")
+        self.comparativo_btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #4f46e5; color: #ffffff; border-radius: 8px; font-weight: bold; font-size: 12px;"
+            "  padding: 10px 16px; border: 1px solid #6366f1;"
+            "}"
+            "QPushButton:hover { background-color: #6366f1; }"
+        )
+        self.comparativo_btn.setMinimumHeight(48)
+        self.comparativo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.comparativo_btn.setToolTip("Consolidar y comparar varios meses en columnas continuas (por carpetas o selección de meses)")
+        self.comparativo_btn.clicked.connect(self.abrir_comparativo_multimes)
+
         self.procesar_ventas_btn = QPushButton("   📊 Generar Informe de Ventas (Centros de Costo)   ")
         self.procesar_ventas_btn.setStyleSheet(
             "QPushButton {"
@@ -587,6 +922,7 @@ class VendedoresWidget(QWidget):
         self.limpiar_btn.clicked.connect(self.limpiar_todo)
 
         btn_layout.addWidget(self.procesar_ventas_btn)
+        btn_layout.addWidget(self.comparativo_btn)
         btn_layout.addWidget(self.config_btn)
         btn_layout.addWidget(self.procesar_nc_btn)
         btn_layout.addWidget(self.procesar_btn)
@@ -1073,6 +1409,19 @@ class VendedoresWidget(QWidget):
             self, "Archivo Bloqueado en Excel" if "ABIERTO" in err_traducido else "Error",
             f"No se pudo generar el reporte de notas crédito:\n\n{err_traducido}"
         )
+
+    def abrir_comparativo_multimes(self):
+        """Abre el diálogo de consolidación y comparativo multi-mes."""
+        periodo_ini = None
+        if self.ruta_archivo or self.ruta_tb or self.ruta_gastos:
+            periodo_ini = {
+                'periodo': getattr(self, '_periodo_detectado', None) or 'OCTUBRE 2026',
+                'ventas': self.ruta_archivo,
+                'balance': self.ruta_tb,
+                'gastos': self.ruta_gastos
+            }
+        dlg = DialogoComparativoMultiMes(self, periodo_inicial=periodo_ini)
+        dlg.exec()
 
     def abrir_config_vendedores(self):
         dlg = ConfigVendedoresDialog(self)
