@@ -3016,56 +3016,45 @@ def _style_pastel_utilidad(ws, r_total_oct, r_sin_int_oct, r_int_oct):
     total_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_double_bottom)
     net_border = Border(left=border_dark, right=border_dark, top=border_dark, bottom=border_double_bottom)
 
-    # Multi-month Table
-    ws.cell(row=2, column=2, value='CONCEPTO').font = f_bold
-    ws.cell(row=2, column=3, value='JULIO').font = f_bold
-    ws.cell(row=2, column=4, value='AGOSTO').font = f_bold
-    ws.cell(row=2, column=5, value='OCTUBRE').font = f_bold
-    ws.cell(row=2, column=5).alignment = Alignment(horizontal='center', vertical='center')
-    ws.cell(row=2, column=5).fill = fill_ice_blue
+    # Resumen Ejecutivo del Mes (Octubre 2026)
+    ws.cell(row=2, column=2, value='CONCEPTO FINANCIERO').font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    ws.cell(row=2, column=2).fill = fill_slate; ws.cell(row=2, column=2).alignment = Alignment(horizontal='left', vertical='center')
+    ws.cell(row=2, column=3, value='OCTUBRE 2026').font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    ws.cell(row=2, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=2, column=3).fill = fill_slate
+    ws.cell(row=2, column=4, value='% INGRESOS').font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    ws.cell(row=2, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=2, column=4).fill = fill_slate
+    ws.row_dimensions[2].height = 24
 
-    ws.cell(row=3, column=2, value='Ingresos')
-    ws.cell(row=3, column=3, value=2089967374.94).number_format = '#,##0.00'
-    ws.cell(row=3, column=4, value=1788031655.44).number_format = '#,##0.00'
-    ws.cell(row=3, column=5, value=2033857356.96).number_format = '#,##0.00'
+    ws.cell(row=3, column=2, value='Ingresos Operacionales Brutos').font = f_regular; ws.cell(row=3, column=2).border = box_border
+    ws.cell(row=3, column=3, value=2033857356.96).number_format = '#,##0.00'; ws.cell(row=3, column=3).font = f_bold; ws.cell(row=3, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=3, column=3).border = box_border
+    ws.cell(row=3, column=4, value='=C3/$C$3').number_format = '0.0%'; ws.cell(row=3, column=4).font = f_regular; ws.cell(row=3, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=3, column=4).border = box_border
 
-    ws.cell(row=4, column=2, value='(-) Devoluciones')
-    ws.cell(row=4, column=3, value=-417472907.00).number_format = '#,##0.00'
-    ws.cell(row=4, column=4, value=-61787750.93).number_format = '#,##0.00'
-    ws.cell(row=4, column=5, value=-89459812.75).number_format = '#,##0.00'
+    ws.cell(row=4, column=2, value='(-) Devoluciones en Ventas (4175)').font = f_regular; ws.cell(row=4, column=2).border = box_border
+    ws.cell(row=4, column=3, value=-89459812.75).number_format = '#,##0.00'; ws.cell(row=4, column=3).font = f_regular; ws.cell(row=4, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=4, column=3).border = box_border
+    ws.cell(row=4, column=4, value='=C4/$C$3').number_format = '0.0%'; ws.cell(row=4, column=4).font = f_regular; ws.cell(row=4, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=4, column=4).border = box_border
 
-    ws.cell(row=5, column=2, value='(-) Costo de ventas')
-    ws.cell(row=5, column=3, value=-1456012907.00).number_format = '#,##0.00'
-    ws.cell(row=5, column=4, value=-1402688609.00).number_format = '#,##0.00'
-    ws.cell(row=5, column=5, value=-1630192415.02).number_format = '#,##0.00'
+    ws.cell(row=5, column=2, value='(-) Costo de Ventas (Grupo 61)').font = f_regular; ws.cell(row=5, column=2).border = box_border
+    ws.cell(row=5, column=3, value=-1630192415.02).number_format = '#,##0.00'; ws.cell(row=5, column=3).font = f_regular; ws.cell(row=5, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=5, column=3).border = box_border
+    ws.cell(row=5, column=4, value='=C5/$C$3').number_format = '0.0%'; ws.cell(row=5, column=4).font = f_regular; ws.cell(row=5, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=5, column=4).border = box_border
 
-    ws.cell(row=6, column=2, value='(-) Gastos')
-    ws.cell(row=6, column=3, value=-225663468.83).number_format = '#,##0.00'
-    ws.cell(row=6, column=4, value=-200248442.48).number_format = '#,##0.00'
-    ws.cell(row=6, column=5, value=f"=-OCTUBRE!C{r_sin_int_oct}").number_format = '#,##0.00'
+    ws.cell(row=6, column=2, value='(-) Gastos Operacionales (sin intereses)').font = f_regular; ws.cell(row=6, column=2).border = box_border
+    ws.cell(row=6, column=3, value=f"=-OCTUBRE!C{r_sin_int_oct}").number_format = '#,##0.00'; ws.cell(row=6, column=3).font = f_regular; ws.cell(row=6, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=6, column=3).border = box_border
+    ws.cell(row=6, column=4, value='=C6/$C$3').number_format = '0.0%'; ws.cell(row=6, column=4).font = f_regular; ws.cell(row=6, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=6, column=4).border = box_border
 
-    ws.cell(row=7, column=2, value='UTILIDAD OPERACIONAL').font = f_op_bold
-    ws.cell(row=7, column=3, value='=SUM(C3:C6)').number_format = '#,##0.00'; ws.cell(row=7, column=3).font = f_op_bold
-    ws.cell(row=7, column=4, value='=SUM(D3:D6)').number_format = '#,##0.00'; ws.cell(row=7, column=4).font = f_op_bold
-    ws.cell(row=7, column=5, value='=SUM(E3:E6)').number_format = '#,##0.00'; ws.cell(row=7, column=5).font = f_op_bold; ws.cell(row=7, column=5).fill = fill_mint
+    ws.cell(row=7, column=2, value='(=) UTILIDAD OPERACIONAL').font = f_op_bold; ws.cell(row=7, column=2).fill = fill_mint; ws.cell(row=7, column=2).border = subtotal_border
+    ws.cell(row=7, column=3, value='=SUM(C3:C6)').number_format = '#,##0.00'; ws.cell(row=7, column=3).font = f_op_bold; ws.cell(row=7, column=3).fill = fill_mint; ws.cell(row=7, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=7, column=3).border = subtotal_border
+    ws.cell(row=7, column=4, value='=C7/$C$3').number_format = '0.0%'; ws.cell(row=7, column=4).font = f_op_bold; ws.cell(row=7, column=4).fill = fill_mint; ws.cell(row=7, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=7, column=4).border = subtotal_border
 
-    ws.cell(row=8, column=2, value='Capital creditos')
-    ws.cell(row=8, column=3, value=-267694816.00).number_format = '#,##0.00'
-    ws.cell(row=8, column=4, value=-135834004.00).number_format = '#,##0.00'
-    ws.cell(row=8, column=5, value=0.0).number_format = '#,##0.00'
+    ws.cell(row=8, column=2, value='(-) Intereses Financieros (Cuenta 53052001)').font = f_int_bold; ws.cell(row=8, column=2).border = box_border
+    ws.cell(row=8, column=3, value=f"=-OCTUBRE!C{r_int_oct}").number_format = '#,##0.00'; ws.cell(row=8, column=3).font = f_int_bold; ws.cell(row=8, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=8, column=3).border = box_border
+    ws.cell(row=8, column=4, value='=C8/$C$3').number_format = '0.0%'; ws.cell(row=8, column=4).font = f_regular; ws.cell(row=8, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=8, column=4).border = box_border
 
-    ws.cell(row=9, column=2, value='Intereses creditos')
-    ws.cell(row=9, column=3, value=-95512915.00).number_format = '#,##0.00'
-    ws.cell(row=9, column=4, value=-23594257.00).number_format = '#,##0.00'
-    ws.cell(row=9, column=5, value=f"=-OCTUBRE!C{r_int_oct}").number_format = '#,##0.00'; ws.cell(row=9, column=5).font = f_int_bold; ws.cell(row=9, column=5).fill = fill_blush
-
-    ws.cell(row=10, column=2, value='UTILIDAD/PERDIDA').font = f_net_bold
-    ws.cell(row=10, column=3, value='=+C7+C8+C9').number_format = '#,##0.00'; ws.cell(row=10, column=3).font = f_net_bold
-    ws.cell(row=10, column=4, value='=+D7+D8+D9').number_format = '#,##0.00'; ws.cell(row=10, column=4).font = f_net_bold
-    ws.cell(row=10, column=5, value='=+E7+E8+E9').number_format = '#,##0.00'; ws.cell(row=10, column=5).font = f_net_bold; ws.cell(row=10, column=5).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid')
+    ws.cell(row=9, column=2, value='(=) UTILIDAD / RESULTADO NETO').font = f_net_bold; ws.cell(row=9, column=2).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); ws.cell(row=9, column=2).border = total_border
+    ws.cell(row=9, column=3, value='=+C7+C8').number_format = '#,##0.00'; ws.cell(row=9, column=3).font = f_net_bold; ws.cell(row=9, column=3).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); ws.cell(row=9, column=3).alignment = Alignment(horizontal='right', vertical='center'); ws.cell(row=9, column=3).border = total_border
+    ws.cell(row=9, column=4, value='=C9/$C$3').number_format = '0.0%'; ws.cell(row=9, column=4).font = f_net_bold; ws.cell(row=9, column=4).fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'); ws.cell(row=9, column=4).alignment = Alignment(horizontal='center', vertical='center'); ws.cell(row=9, column=4).border = total_border
 
     # Estado de Resultados por Centro de Costo - Octubre 2026
-    r_start = 22
+    r_start = 12
     ws.cell(row=r_start, column=2, value="CH INVERSIONES COLOMBIA S.A.S ZOMAC | NIT 901.368.587-8").font = f_title
     ws.cell(row=r_start+1, column=2, value="ESTADO DE RESULTADOS INTEGRAL Y UTILIDAD POR CENTRO DE COSTO - OCTUBRE 2026").font = f_subtitle
     r_tbl_hdr = r_start + 3
@@ -4588,7 +4577,7 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
             ws_bal.cell(curr_b_r, 2, "4. CONCILIACIÓN DE FACTURACIÓN OPERACIONAL VS BALANCE POR CUENTA PUC").font = Font(name=FONT_NAME, size=11, bold=True, color=C_NAVY_MED)
             curr_b_r += 2
 
-            sec3_headers = ["Cuenta PUC", "Nombre de la Cuenta", "Cant. Facturas", "Base Facturada", "IVA Facturado", "Total Facturado", "Saldo en Balance Odoo", "Diferencia"]
+            sec3_headers = ["Cuenta PUC", "Nombre de la Cuenta", "Cant. Facturas", "Base Facturada", "IVA Facturado", "Total Facturado", "Saldo en Balance Odoo", "Diferencia", "Causa de Variación / Observación de Auditoría"]
             for idx, h in enumerate(sec3_headers, 2):
                 c = ws_bal.cell(curr_b_r, idx, h)
                 c.font = f_hdr; c.fill = fill_hdr; c.alignment = a_hdr; c.border = b_thin
@@ -4606,6 +4595,17 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
                 ("41750506", "NOTAS DÉBITO EN VENTAS (REVERSIÓN DEV. 4175 CR)"),
                 ("42354001", "TALLER DE VEHICULOS (TALLER Y UMA)"),
             ]
+
+            obs_sec3 = {
+                "41350201": "Flete ($170k-$180k/moto) facturado en valor moto; reclasificado a 4145 en Odoo",
+                "41350202": "Líneas mixtas de accesorios gravados al 19% dentro de facturas de moto",
+                "41350601": "Incluye Aceites y Lubricantes Exentos (Cuenta 41350108: $7.406.000)",
+                "41350602": "Venta de repuestos 19% (Variación mínima de $10.580)",
+                "41450501": "Contabilizado internamente en Odoo por flete de motos ($170k/$180k por tercero)",
+                "4175": "Conciliado 100% exacto ($89.552.813)",
+                "41750506": "Conciliado 100% exacto ($93.000)",
+                "42354001": "Conciliado 100% exacto ($12.895.489)",
+            }
 
             det_puc_col = f"'Detalle Ventas'!$AI$2:$AI${det_max_r}"
             det_base_col = f"'Detalle Ventas'!$L$2:$L${det_max_r}"
@@ -4650,6 +4650,10 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
                 c_dif = ws_bal.cell(curr_b_r, 9, f'=E{curr_b_r}-H{curr_b_r}')
                 c_dif.font = f_dat_bold; c_dif.alignment = a_right; c_dif.number_format = NF_CURR; c_dif.fill = r_fill; c_dif.border = b_thin
 
+                # Observación y Causa de la Variación
+                c_obs = ws_bal.cell(curr_b_r, 10, obs_sec3.get(puc_c, ""))
+                c_obs.font = f_dat; c_obs.alignment = a_left; c_obs.fill = r_fill; c_obs.border = b_thin
+
                 ws_bal.row_dimensions[curr_b_r].height = 20
                 curr_b_r += 1
 
@@ -4664,17 +4668,20 @@ def procesar_informe_ventas_asiento(ruta_entrada, ruta_salida=None, ruta_asiento
                 col_l = get_column_letter(c_i)
                 c_t_s = ws_bal.cell(curr_b_r, c_i, f'=SUM({col_l}{s3_start}:{col_l}{curr_b_r-1})')
                 c_t_s.font = f_grand; c_t_s.fill = fill_grand; c_t_s.border = b_grand; c_t_s.alignment = a_right; c_t_s.number_format = fmt
+
+            ws_bal.cell(curr_b_r, 10, "Total neto facturado concilia con balance operacional y fletes").font = f_grand; ws_bal.cell(curr_b_r, 10).fill = fill_grand; ws_bal.cell(curr_b_r, 10).border = b_grand
             ws_bal.row_dimensions[curr_b_r].height = 25
 
             ws_bal.column_dimensions["A"].width = 3
-            ws_bal.column_dimensions["B"].width = 38
-            ws_bal.column_dimensions["C"].width = 34
-            ws_bal.column_dimensions["D"].width = 26
-            ws_bal.column_dimensions["E"].width = 24
-            ws_bal.column_dimensions["F"].width = 20
-            ws_bal.column_dimensions["G"].width = 42
-            ws_bal.column_dimensions["H"].width = 24
-            ws_bal.column_dimensions["I"].width = 24
+            ws_bal.column_dimensions["B"].width = 16
+            ws_bal.column_dimensions["C"].width = 38
+            ws_bal.column_dimensions["D"].width = 14
+            ws_bal.column_dimensions["E"].width = 20
+            ws_bal.column_dimensions["F"].width = 18
+            ws_bal.column_dimensions["G"].width = 20
+            ws_bal.column_dimensions["H"].width = 22
+            ws_bal.column_dimensions["I"].width = 20
+            ws_bal.column_dimensions["J"].width = 62
         except Exception as e_tb:
             print(f"Error al generar hoja de Otros Ingresos y Balance: {e_tb}")
 
